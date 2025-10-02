@@ -18,13 +18,18 @@ export const adminNavItems: NavItem[] = [
   {href: '/admin/crm', label: 'CRM', icon: MessageSquare},
   {href: '/admin/reports', label: 'Reports', icon: BarChartBig},
   {href: '/delivery-status-tool', label: 'AI Status Tool', icon: FileCog},
+  {
+    href: '/admin/business/dashboard',
+    label: 'Business Dashboard',
+    icon: Building2,
+  },
 ];
 
 export const businessNavItems: NavItem[] = [
-  {href: '/business/dashboard', label: 'Dashboard', icon: LayoutDashboard},
-  {href: '/business/deliveries/new', label: 'New Delivery', icon: Truck},
-  {href: '/business/reports', label: 'Reports & Invoicing', icon: FileText},
-  {href: '/business/team', label: 'Team Management', icon: Users},
+  {href: '/admin/business/dashboard', label: 'Dashboard', icon: LayoutDashboard},
+  {href: '/admin/business/deliveries/new', label: 'New Delivery', icon: Truck},
+  {href: '/admin/business/reports', label: 'Reports & Invoicing', icon: FileText},
+  {href: '/admin/business/team', label: 'Team Management', icon: Users},
 ];
 
 export const mockUser: User = {

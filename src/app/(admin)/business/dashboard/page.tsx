@@ -40,13 +40,13 @@ export default function BusinessDashboard() {
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4">
               <Button asChild size="lg" className="h-20 flex-col gap-1">
-                <Link href="/business/deliveries/new">
+                <Link href="/admin/business/deliveries/new">
                   <PlusCircle className="h-6 w-6" />
                   <span className="text-base">New Delivery</span>
                 </Link>
               </Button>
               <Button asChild variant="secondary" size="lg" className="h-20 flex-col gap-1">
-                <Link href="/business/deliveries/new">
+                <Link href="/admin/business/deliveries/new">
                   <Calendar className="h-6 w-6" />
                   <span className="text-base">Schedule Job</span>
                 </Link>
