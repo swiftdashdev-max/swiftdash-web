@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import {usePathname} from 'next/navigation';
 import Image from 'next/image';
+import * as LucideIcons from 'lucide-react';
 import {
   Bell,
   ChevronDown,
@@ -54,6 +55,14 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
+const DynamicIcon = ({name}: {name: string}) => {
+  const Icon = (LucideIcons as any)[name];
+  if (!Icon) {
+    return null;
+  }
+  return <Icon />;
+};
+
 export function AppShell({navItems, children}: AppShellProps) {
   const pathname = usePathname();
   const userAvatar = PlaceHolderImages.find(img => img.id === mockUser.avatar);
@@ -82,7 +91,7 @@ export function AppShell({navItems, children}: AppShellProps) {
                   tooltip={item.label}
                 >
                   <Link href={item.href}>
-                    <item.icon />
+                    <DynamicIcon name={item.icon} />
                     <span>{item.label}</span>
                   </Link>
                 </SidebarMenuButton>

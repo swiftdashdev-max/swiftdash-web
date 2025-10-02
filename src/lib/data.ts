@@ -1,35 +1,26 @@
 import type {NavItem, User, Driver, Delivery, Ticket, Report, Invoice, TeamMember} from './types';
-import {
-  LayoutDashboard,
-  Users,
-  MessageSquare,
-  BarChartBig,
-  Building2,
-  FileText,
-  UserCheck,
-  Truck,
-  FileCog,
-} from 'lucide-react';
-import {SwiftdashLogo} from '@/components/icons';
 
 export const adminNavItems: NavItem[] = [
-  {href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard},
-  {href: '/admin/drivers', label: 'Driver Verification', icon: UserCheck},
-  {href: '/admin/crm', label: 'CRM', icon: MessageSquare},
-  {href: '/admin/reports', label: 'Reports', icon: BarChartBig},
-  {href: '/delivery-status-tool', label: 'AI Status Tool', icon: FileCog},
+  {href: '/admin/dashboard', label: 'Dashboard', icon: 'LayoutDashboard'},
+  {href: '/admin/drivers', label: 'Driver Verification', icon: 'UserCheck'},
+  {href: '/admin/crm', label: 'CRM', icon: 'MessageSquare'},
+  {href: '/admin/reports', label: 'Reports', icon: 'BarChartBig'},
+  {href: '/delivery-status-tool', label: 'AI Status Tool', icon: 'FileCog'},
   {
     href: '/admin/business/dashboard',
     label: 'Business Dashboard',
-    icon: Building2,
+    icon: 'Building2',
   },
+  {href: '/admin/business/deliveries/new', label: 'New Delivery', icon: 'Truck'},
+  {href: '/admin/business/reports', label: 'Business Reports', icon: 'FileText'},
+  {href: '/admin/business/team', label: 'Team Management', icon: 'Users'},
 ];
 
 export const businessNavItems: NavItem[] = [
-  {href: '/admin/business/dashboard', label: 'Dashboard', icon: LayoutDashboard},
-  {href: '/admin/business/deliveries/new', label: 'New Delivery', icon: Truck},
-  {href: '/admin/business/reports', label: 'Reports & Invoicing', icon: FileText},
-  {href: '/admin/business/team', label: 'Team Management', icon: Users},
+  {href: '/admin/business/dashboard', label: 'Dashboard', icon: 'LayoutDashboard'},
+  {href: '/admin/business/deliveries/new', label: 'New Delivery', icon: 'Truck'},
+  {href: '/admin/business/reports', label: 'Reports & Invoicing', icon: 'FileText'},
+  {href: '/admin/business/team', label: 'Team Management', icon: 'Users'},
 ];
 
 export const mockUser: User = {

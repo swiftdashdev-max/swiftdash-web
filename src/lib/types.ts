@@ -4,7 +4,7 @@ import type React from 'react';
 export type NavItem = {
   href: string;
   label: string;
-  icon: LucideIcon | React.ComponentType<{className?: string}>;
+  icon: string;
   active?: boolean;
 };
 
