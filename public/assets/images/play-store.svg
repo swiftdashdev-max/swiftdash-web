@@ -1,1 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+<?xml version="1.0" encoding="utf-8"?>
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" 
+     viewBox="0 0 180 60" xml:space="preserve">
+  
+  <!-- Background with rounded corners -->
+  <rect width="180" height="60" rx="8" fill="#000000"/>
+  <rect x="1" y="1" width="178" height="58" rx="7" fill="none" stroke="#A6A6A6" stroke-width="1"/>
+  
+  <!-- Google Play Logo -->
+  <g transform="translate(18, 12) scale(1.2)">
+    <path d="M0.97,0.19L10.25,9.47L0.97,18.75c-0.03-0.07-0.03-0.13-0.03-0.21V0.4C0.94,0.32,0.94,0.26,0.97,0.19z" 
+          fill="#4285f4"/>
+    <path d="M13.47,7.77l-3.22-1.84L10.25,5.93L0.97,0.19c0.13-0.13,0.29-0.19,0.5-0.19c0.13,0,0.29,0.03,0.42,0.1l11.58,6.53V6.64z" 
+          fill="#34a853"/>
+    <path d="M0.97,18.75l9.28-9.28l0,0l3.22,3.22l0,0L1.89,18.85c-0.13,0.07-0.29,0.1-0.42,0.1C1.26,18.94,1.1,18.88,0.97,18.75z" 
+          fill="#ea4335"/>
+    <path d="M13.47,11.17v0.03l-3.22-1.73l3.22-1.84v0.03l2.32,1.26c0.42,0.23,0.68,0.58,0.68,0.97s-0.26,0.74-0.68,0.97L13.47,11.17z" 
+          fill="#fbbc04"/>
+  </g>
+  
+  <!-- Text -->
+  <g transform="translate(48, 0)">
+    <text x="0" y="22" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="9" font-weight="300">
+      GET IT ON
+    </text>
+    <text x="0" y="40" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="16" font-weight="600">
+      Google Play
+    </text>
+  </g>
+</svg>

@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, ChevronRight, Feather, Zap, Map, Clock, Briefcase, Globe, Mail, Phone } from 'lucide-react';
+import { ArrowRight, ChevronRight, Feather, Zap, Map, Clock, Briefcase, Globe, Mail } from 'lucide-react';
 import { Reveal, SlideIn, ScaleIn } from '@/components/animations';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { HoleBackground } from '@/components/animate-ui/components/backgrounds/hole';
 import { useState } from 'react';
 
 const features = [
@@ -119,7 +120,7 @@ export default function Home() {
       <main className="pt-20">
         {/* Hero Section */}
         <section className="relative h-[calc(100vh-5rem)] flex items-center justify-center text-center overflow-hidden">
-          <div className="absolute inset-0 bg-grid-slate-100 [mask-image:linear-gradient(to_bottom,white_5%,transparent_90%)]"></div>
+          <HoleBackground className="absolute inset-0" />
           <div className="container mx-auto px-6 relative">
             <Reveal>
               <h1 className="text-5xl md:text-7xl font-bold tracking-tighter leading-tight text-foreground">
@@ -138,44 +139,70 @@ export default function Home() {
             </Reveal>
             <Reveal delay={0.6}>
               <div className="mt-10 flex flex-col sm:flex-row justify-center items-center gap-4">
-                <Button asChild size="lg" variant="outline" className="w-full sm:w-auto">
-                    <Link href="#">
-                        <Image src="/assets/images/app-store.svg" alt="App Store" width={120} height={40} />
-                    </Link>
-                </Button>
-                <Button asChild size="lg" variant="outline" className="w-full sm:w-auto">
-                    <Link href="#">
-                        <Image src="/assets/images/play-store.svg" alt="Play Store" width={135} height={40} />
-                    </Link>
-                </Button>
+                <Link href="#" className="inline-block transition-transform hover:scale-105">
+                  <Image 
+                    src="/assets/images/app-store.svg" 
+                    alt="Download on the App Store" 
+                    width={160} 
+                    height={54} 
+                    className="h-14 w-auto"
+                  />
+                </Link>
+                <Link href="#" className="inline-block transition-transform hover:scale-105">
+                  <Image 
+                    src="/assets/images/play-store.svg" 
+                    alt="Get it on Google Play" 
+                    width={180} 
+                    height={54} 
+                    className="h-14 w-auto"
+                  />
+                </Link>
               </div>
             </Reveal>
           </div>
         </section>
 
         {/* App Mockup Section */}
-        <section id="mockups" className="py-24 sm:py-32">
+        <section id="mockups" className="py-24 sm:py-32 bg-gradient-to-b from-background to-secondary/20">
             <div className="container mx-auto px-6">
-                <div className="relative flex justify-center items-center h-96 lg:h-[600px]">
-                    <ScaleIn delay={0.4}>
-                        <div className="relative w-64 h-[512px] bg-gray-800 rounded-[48px] border-[16px] border-gray-900 shadow-2xl -rotate-6">
-                            <div className="absolute inset-0 rounded-[32px] bg-secondary/50 flex items-center justify-center">
-                                <p className="text-muted-foreground">App Mockup 1</p>
-                            </div>
-                        </div>
-                    </ScaleIn>
+                <div className="text-center mb-16">
+                    <Reveal>
+                        <h2 className="text-4xl md:text-5xl font-bold tracking-tighter text-foreground">
+                            Experience SwiftDash
+                        </h2>
+                    </Reveal>
+                    <Reveal delay={0.3}>
+                        <p className="mt-4 text-lg text-muted-foreground">
+                            Seamless delivery management at your fingertips
+                        </p>
+                    </Reveal>
+                </div>
+                <div className="flex justify-center items-center gap-6 lg:gap-8 max-w-5xl mx-auto">
+                    {/* Left - Home Screen */}
                     <ScaleIn delay={0.2}>
-                        <div className="relative w-72 h-[576px] bg-gray-800 rounded-[48px] border-[16px] border-gray-900 shadow-2xl z-10">
-                             <div className="absolute inset-0 rounded-[32px] bg-background flex items-center justify-center">
-                                <p className="text-muted-foreground">App Mockup 2</p>
-                            </div>
+                        <div className="relative w-[780px] lg:w-[750px]">
+                            <Image 
+                                src="/assets/images/app-home.png" 
+                                alt="SwiftDash Home Screen - Track Live, Quick Actions including Request Delivery, Track Order, My Addresses, and Order History" 
+                                width={1000}
+                                height={2000}
+                                className="w-full h-auto drop-shadow-2xl"
+                                priority
+                            />
                         </div>
                     </ScaleIn>
+
+                    {/* Right - Tracking Screen */}
                     <ScaleIn delay={0.4}>
-                        <div className="relative w-64 h-[512px] bg-gray-800 rounded-[48px] border-[16px] border-gray-900 shadow-2xl rotate-6">
-                             <div className="absolute inset-0 rounded-[32px] bg-secondary/50 flex items-center justify-center">
-                                <p className="text-muted-foreground">App Mockup 3</p>
-                            </div>
+                        <div className="relative w-[780px] lg:w-[750px]">
+                            <Image 
+                                src="/assets/images/app-order.png" 
+                                alt="SwiftDash Order Summary - Detailed view of Light Truck delivery with pickup/delivery locations and price breakdown (₱806.40)" 
+                                width={1000}
+                                height={2000}
+                                className="w-full h-auto drop-shadow-2xl"
+                                priority
+                            />
                         </div>
                     </ScaleIn>
                 </div>
@@ -288,15 +315,11 @@ export default function Home() {
                         <div className="space-y-4">
                             <div className="flex items-center">
                                 <Mail className="h-5 w-5 mr-4 text-muted-foreground" />
-                                <a href="mailto:support@swiftdash.ph" className="text-foreground hover:text-primary transition-colors">support@swiftdash.ph</a>
+                                <a href="mailto:info@swiftdash.ph" className="text-foreground hover:text-primary transition-colors">info@swiftdash.ph</a>
                             </div>
-                            <div className="flex items-center">
-                                <Phone className="h-5 w-5 mr-4 text-muted-foreground" />
-                                <span className="text-foreground">(+63) 2 8123 4567</span>
-                            </div>
-                             <div className="flex items-center">
-                                <Globe className="h-5 w-5 mr-4 text-muted-foreground" />
-                                <span className="text-foreground">Metro Manila, Philippines</span>
+                            <div className="flex items-start">
+                                <Globe className="h-5 w-5 mr-4 mt-1 text-muted-foreground flex-shrink-0" />
+                                <span className="text-foreground">Level 40, PBCom Tower, Makati</span>
                             </div>
                         </div>
                     </div>
