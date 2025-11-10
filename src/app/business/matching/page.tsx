@@ -29,6 +29,8 @@ import {
   CheckCircle2,
   ArrowRight,
 } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+import { useToast } from '@/hooks/use-toast';
 
 interface PendingDelivery {
   id: string;
@@ -64,6 +66,8 @@ export default function MatchingPage() {
   const [assigning, setAssigning] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const { toast } = useToast();
+  const supabase = createClient();
 
   // Fetch pending deliveries and available drivers
   useEffect(() => {
@@ -74,41 +78,113 @@ export default function MatchingPage() {
     try {
       setLoading(true);
 
-      // Fetch pending deliveries (status = 'pending')
-      const deliveriesResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/deliveries?status=eq.pending&select=*`,
-        {
-          headers: {
-            'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-          },
-        }
-      );
+      // Get current user and their business_id
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No authenticated user');
+        return;
+      }
 
-      if (deliveriesResponse.ok) {
-        const deliveries = await deliveriesResponse.json();
-        setPendingDeliveries(deliveries);
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('id', user.id)
+        .single();
+
+      if (!userProfile?.business_id) {
+        console.error('No business_id found');
+        return;
+      }
+
+      // Fetch pending deliveries (status = 'pending', belonging to this business)
+      const { data: deliveries, error: deliveriesError } = await supabase
+        .from('deliveries')
+        .select('*')
+        .eq('business_id', userProfile.business_id)
+        .eq('status', 'pending')
+        .is('driver_id', null)
+        .order('created_at', { ascending: false });
+
+      if (deliveriesError) {
+        console.error('Error fetching deliveries:', deliveriesError);
+      } else {
+        setPendingDeliveries(deliveries || []);
         console.log('📦 Pending deliveries:', deliveries);
       }
 
-      // Fetch available drivers (status = 'available')
-      const driversResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/drivers?status=eq.available&select=*`,
-        {
-          headers: {
-            'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-          },
-        }
-      );
+      // Fetch available drivers (current_status = 'online')
+      const { data: driverProfiles, error: driversError } = await supabase
+        .from('driver_profiles')
+        .select(`
+          id,
+          current_status,
+          rating,
+          total_deliveries,
+          vehicle_type_id,
+          current_latitude,
+          current_longitude
+        `)
+        .eq('current_status', 'online');
 
-      if (driversResponse.ok) {
-        const drivers = await driversResponse.json();
-        setAvailableDrivers(drivers);
-        console.log('🚗 Available drivers:', drivers);
+      if (driversError) {
+        console.error('Error fetching driver profiles:', driversError);
+      } else {
+        // Get user profiles for drivers (names, phone)
+        const driverIds = (driverProfiles || []).map(d => d.id);
+        
+        if (driverIds.length > 0) {
+          const { data: userProfiles } = await supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, phone_number')
+            .in('id', driverIds);
+
+          // Get vehicle types
+          const vehicleTypeIds = [...new Set((driverProfiles || [])
+            .map(d => d.vehicle_type_id)
+            .filter(Boolean))];
+
+          const { data: vehicleTypes } = await supabase
+            .from('vehicle_types')
+            .select('id, name')
+            .in('id', vehicleTypeIds);
+
+          const vehicleTypeMap = (vehicleTypes || []).reduce((acc, vt) => {
+            acc[vt.id] = vt.name;
+            return acc;
+          }, {} as Record<string, string>);
+
+          // Combine data
+          const drivers: AvailableDriver[] = (driverProfiles || []).map(driver => {
+            const userProfile = (userProfiles || []).find(up => up.id === driver.id);
+            return {
+              id: driver.id,
+              full_name: userProfile 
+                ? `${userProfile.first_name} ${userProfile.last_name}` 
+                : 'Unknown Driver',
+              phone: userProfile?.phone_number || 'N/A',
+              vehicle_type: vehicleTypeMap[driver.vehicle_type_id] || 'Unknown',
+              current_location: driver.current_latitude && driver.current_longitude
+                ? { lat: Number(driver.current_latitude), lng: Number(driver.current_longitude) }
+                : undefined,
+              rating: Number(driver.rating) || 0,
+              total_deliveries: driver.total_deliveries || 0,
+              status: driver.current_status as 'available' | 'busy' | 'offline',
+            };
+          });
+
+          setAvailableDrivers(drivers);
+          console.log('🚗 Available drivers:', drivers);
+        } else {
+          setAvailableDrivers([]);
+        }
       }
     } catch (error) {
       console.error('❌ Error fetching data:', error);
+      toast({
+        title: "Error Loading Data",
+        description: "Failed to load deliveries and drivers.",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -120,33 +196,67 @@ export default function MatchingPage() {
     try {
       setAssigning(true);
 
-      // Update delivery with assigned driver
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/deliveries?id=eq.${selectedDelivery}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=representation',
-          },
-          body: JSON.stringify({
-            driver_id: selectedDriver,
-            status: 'assigned',
-          }),
-        }
-      );
-
-      if (response.ok) {
-        console.log('✅ Driver assigned successfully');
-        // Refresh data
-        fetchData();
-        setSelectedDelivery(null);
-        setSelectedDriver(null);
+      // Get current user for assigned_by field
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      
+      if (userError || !user) {
+        toast({
+          title: "Authentication Error",
+          description: "Please log in to assign drivers.",
+          variant: "destructive",
+        });
+        return;
       }
+
+      // Call edge function to assign driver
+      const { data, error } = await supabase.functions.invoke('assign-business-driver', {
+        body: {
+          delivery_id: selectedDelivery,
+          driver_id: selectedDriver,
+          assigned_by: user.id,
+          assignment_type: 'manual'
+        }
+      });
+
+      if (error) {
+        console.error('❌ Error assigning driver:', error);
+        toast({
+          title: "Assignment Failed",
+          description: error.message || "Failed to assign driver. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Check response from edge function
+      if (!data.success) {
+        toast({
+          title: "Assignment Failed",
+          description: data.error || "Driver assignment failed.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Success!
+      console.log('✅ Driver assigned successfully:', data);
+      toast({
+        title: "Driver Assigned",
+        description: "The driver has been notified and will start the delivery.",
+      });
+
+      // Refresh data and clear selections
+      await fetchData();
+      setSelectedDelivery(null);
+      setSelectedDriver(null);
+
     } catch (error) {
-      console.error('❌ Error assigning driver:', error);
+      console.error('❌ Unexpected error:', error);
+      toast({
+        title: "Error",
+        description: "An unexpected error occurred. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setAssigning(false);
     }

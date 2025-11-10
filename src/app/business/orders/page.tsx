@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { bookDelivery } from '@/lib/supabase/edge-functions';
+import { bookDelivery, createMultiStopDelivery } from '@/lib/supabase/edge-functions';
 import { useVehicleTypes } from '@/hooks/use-vehicle-types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
@@ -22,6 +23,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { DeliveryMap } from '@/components/delivery-map';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
@@ -42,6 +51,10 @@ import {
   Loader2,
   CheckCircle2,
   ArrowRight,
+  Receipt,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 // Vehicle type interface matching database schema
@@ -74,12 +87,24 @@ interface PickupLocation {
   instructions: string;
 }
 
+interface OrderItem {
+  id: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+}
+
 export default function OrdersPage() {
   const router = useRouter();
   const [deliveryType, setDeliveryType] = useState<'single' | 'multi'>('single');
   const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduledTime, setScheduledTime] = useState<string>('');
+  const [useFleetVehicles, setUseFleetVehicles] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState('');
+  const [selectedFleetVehicle, setSelectedFleetVehicle] = useState('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isOrderDetailsExpanded, setIsOrderDetailsExpanded] = useState(false);
+  const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [routeDistance, setRouteDistance] = useState<number>(0);
   const [routeDuration, setRouteDuration] = useState<number>(0);
   const [estimatedCost, setEstimatedCost] = useState<number>(0);
@@ -97,6 +122,15 @@ export default function OrdersPage() {
     paymentMethod: 'cash' as 'cash' | 'creditCard' | 'debitCard' | 'maya'
   });
   
+  // Order items state (Shipday-style)
+  const [orderItems, setOrderItems] = useState<OrderItem[]>([
+    { id: '1', name: '', quantity: 1, unitPrice: 0 }
+  ]);
+  const [taxPercentage, setTaxPercentage] = useState<number>(0);
+  const [deliveryFee, setDeliveryFee] = useState<number>(0);
+  const [tipAmount, setTipAmount] = useState<number>(0);
+  const [discountAmount, setDiscountAmount] = useState<number>(0);
+  
   // Supabase client
   const supabase = createClient();
   
@@ -107,6 +141,46 @@ export default function OrdersPage() {
   
   // Use cached vehicle types hook
   const { vehicleTypes, loading: loadingVehicles, error: vehicleError } = useVehicleTypes();
+  
+  // Fleet vehicles state
+  const [fleetVehicles, setFleetVehicles] = useState<any[]>([]);
+  const [loadingFleet, setLoadingFleet] = useState(false);
+  const [fleetError, setFleetError] = useState<string | null>(null);
+
+  // Fetch fleet vehicles when toggle is enabled
+  useEffect(() => {
+    if (useFleetVehicles) {
+      fetchFleetVehicles();
+    }
+  }, [useFleetVehicles]);
+
+  const fetchFleetVehicles = async () => {
+    try {
+      setLoadingFleet(true);
+      setFleetError(null);
+      
+      const { data, error } = await supabase
+        .from('business_fleet')
+        .select(`
+          *,
+          assigned_driver:driver_profiles(
+            id, 
+            is_online,
+            user_profiles!inner(first_name, last_name, phone_number)
+          ),
+          vehicle_type:vehicle_types(name, icon_emoji)
+        `)
+        .eq('status', 'active');
+
+      if (error) throw error;
+      setFleetVehicles(data || []);
+    } catch (error) {
+      console.error('Error fetching fleet:', error);
+      setFleetError('Failed to load fleet vehicles');
+    } finally {
+      setLoadingFleet(false);
+    }
+  };
   
   const [pickupLocation, setPickupLocation] = useState<PickupLocation>({
     address: '',
@@ -140,7 +214,7 @@ export default function OrdersPage() {
         label: stop.address,
         type: 'dropoff' as const,
       }));
-  }, [dropoffStops]);
+  }, [dropoffStops.map(s => `${s.lat},${s.lng},${s.address}`).join('|')]);
 
   const addDropoffStop = () => {
     const newStop: DropoffStop = {
@@ -159,6 +233,47 @@ export default function OrdersPage() {
     }
   };
 
+  // Order Items Management
+  const addOrderItem = () => {
+    const newItem: OrderItem = {
+      id: Date.now().toString(),
+      name: '',
+      quantity: 1,
+      unitPrice: 0
+    };
+    setOrderItems([...orderItems, newItem]);
+  };
+
+  const removeOrderItem = (id: string) => {
+    if (orderItems.length > 1) {
+      setOrderItems(orderItems.filter(item => item.id !== id));
+    }
+  };
+
+  const updateOrderItem = (id: string, field: keyof OrderItem, value: string | number) => {
+    setOrderItems(orderItems.map(item => 
+      item.id === id ? { ...item, [field]: value } : item
+    ));
+  };
+
+  // Calculate Order Totals
+  const calculateOrderTotals = () => {
+    const subtotal = orderItems.reduce((sum, item) => {
+      return sum + (item.quantity * item.unitPrice);
+    }, 0);
+    
+    const tax = subtotal * (taxPercentage / 100);
+    const grandTotal = subtotal + tax + deliveryFee + tipAmount - discountAmount;
+    
+    return {
+      subtotal,
+      tax,
+      grandTotal: Math.max(0, grandTotal)
+    };
+  };
+
+  const orderTotals = calculateOrderTotals();
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -166,8 +281,11 @@ export default function OrdersPage() {
       setIsSubmitting(true);
 
       // Validation
-      if (!selectedVehicle) {
+      if (!useFleetVehicles && !selectedVehicle) {
         throw new Error('Please select a vehicle type');
+      }
+      if (useFleetVehicles && !selectedFleetVehicle) {
+        throw new Error('Please select a fleet vehicle');
       }
       if (!pickupLocation.address || !pickupLocation.lat || !pickupLocation.lng) {
         throw new Error('Please select a pickup location');
@@ -229,7 +347,9 @@ export default function OrdersPage() {
 
       // Transform data for Edge Function
       const edgeFunctionPayload = {
-        vehicleTypeId: selectedVehicle,
+        vehicleTypeId: useFleetVehicles ? undefined : selectedVehicle,
+        fleetVehicleId: useFleetVehicles ? selectedFleetVehicle : undefined,
+        assignmentType: useFleetVehicles ? 'manual' : 'auto',
         pickup: {
           address: pickupLocation.address,
           location: { lat: pickupLocation.lat!, lng: pickupLocation.lng! },
@@ -253,17 +373,59 @@ export default function OrdersPage() {
           paymentBy: paymentDetails.paymentBy as 'sender' | 'recipient',
           paymentMethod: paymentDetails.paymentMethod as 'cash' | 'creditCard' | 'debitCard' | 'maya',
           paymentStatus: 'pending' as const
-        }
+        },
+        isScheduled: isScheduled,
+        scheduledPickupTime: isScheduled ? scheduledTime : undefined
       };
 
       console.log('📦 Creating delivery via Edge Function:', edgeFunctionPayload);
 
-      // Use Edge Function instead of direct DB insert
-      const createdDelivery = await bookDelivery(edgeFunctionPayload);
+      // Use Edge Function - choose single or multi-stop based on deliveryType
+      let createdDelivery;
+      if (deliveryType === 'multi' && dropoffStops.length > 1) {
+        // Multi-stop delivery
+        const multiStopPayload = {
+          vehicleTypeId: useFleetVehicles ? undefined : selectedVehicle,
+          fleetVehicleId: useFleetVehicles ? selectedFleetVehicle : undefined,
+          assignmentType: useFleetVehicles ? 'manual' : 'auto',
+          pickup: {
+            address: pickupLocation.address,
+            location: { lat: pickupLocation.lat!, lng: pickupLocation.lng! },
+            contactName: pickupLocation.contactName,
+            contactPhone: pickupLocation.contactPhone,
+            instructions: pickupLocation.instructions
+          },
+          dropoffStops: dropoffStops.map(stop => ({
+            address: stop.address,
+            location: { lat: stop.lat!, lng: stop.lng! },
+            contactName: stop.contactName,
+            contactPhone: stop.contactPhone,
+            instructions: stop.instructions,
+            packageDescription: packageDetails.description || "Package delivery",
+            packageWeight: packageDetails.weight || 1
+          })),
+          payment: {
+            paymentBy: paymentDetails.paymentBy as 'sender' | 'recipient',
+            paymentMethod: paymentDetails.paymentMethod as 'cash' | 'creditCard' | 'debitCard' | 'maya',
+            paymentStatus: 'pending' as const
+          },
+          isScheduled: isScheduled,
+          scheduledPickupTime: isScheduled ? scheduledTime : undefined
+        };
+        console.log('📦 Creating MULTI-STOP delivery:', multiStopPayload);
+        createdDelivery = await createMultiStopDelivery(multiStopPayload);
+      } else {
+        // Single-stop delivery
+        console.log('📦 Creating SINGLE-STOP delivery:', edgeFunctionPayload);
+        createdDelivery = await bookDelivery(edgeFunctionPayload);
+      }
       console.log('✅ Delivery created:', createdDelivery);
 
+      // Extract delivery ID from response (structure may vary)
+      const deliveryId = createdDelivery?.delivery?.id || createdDelivery?.id;
+      
       // Show success dialog
-      setCreatedDeliveryId(createdDelivery.id);
+      setCreatedDeliveryId(deliveryId);
       setShowSuccessDialog(true);
 
     } catch (error) {
@@ -311,6 +473,17 @@ export default function OrdersPage() {
     }
   }, [selectedVehicle, deliveryType, dropoffStops.length]);
 
+  // Trigger map resize when sidebar state changes
+  React.useEffect(() => {
+    // Small delay to ensure CSS transition completes before resize
+    const timer = setTimeout(() => {
+      // Trigger a custom event that the map can listen to
+      window.dispatchEvent(new Event('resize'));
+    }, 350); // Slightly longer than the 300ms transition
+
+    return () => clearTimeout(timer);
+  }, [isSidebarCollapsed, isOrderDetailsExpanded]);
+
   // Helper function to set demo location (for testing - remove in production)
   const setDemoPickupLocation = () => {
     setPickupLocation({
@@ -344,11 +517,15 @@ export default function OrdersPage() {
       {/* Load Google Maps API */}
       <GoogleMapsLoader />
       
-      <div className="flex h-[calc(100vh-4rem)] w-full relative">
+      <div className="flex h-screen w-full relative">
         {/* Sidebar - Order Creation Form */}
       <div 
         className={`${
-          isSidebarCollapsed ? 'w-0' : 'w-[30%] min-w-[360px] max-w-[450px]'
+          isSidebarCollapsed 
+            ? 'w-0' 
+            : isOrderDetailsExpanded 
+              ? 'w-[65%] min-w-[800px]' 
+              : 'w-[30%] min-w-[360px] max-w-[450px]'
         } border-r bg-background transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0`}
       >
         <div className="w-full h-full overflow-y-auto">
@@ -373,37 +550,98 @@ export default function OrdersPage() {
               <form onSubmit={handleSubmit} className="space-y-6 mt-6">
                 {/* Vehicle Selection */}
                 <div className="space-y-3">
-                  <Label>Vehicle Type</Label>
-                  {loadingVehicles ? (
-                    <div className="flex items-center justify-center p-4 border rounded-lg">
-                      <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                      <span className="text-sm text-muted-foreground">Loading vehicles...</span>
+                  <div className="flex items-center justify-between">
+                    <Label>Vehicle Selection</Label>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="use-fleet" className="text-sm font-normal cursor-pointer">
+                        Use My Fleet
+                      </Label>
+                      <Switch 
+                        id="use-fleet"
+                        checked={useFleetVehicles} 
+                        onCheckedChange={(checked) => {
+                          setUseFleetVehicles(checked);
+                          setSelectedVehicle('');
+                          setSelectedFleetVehicle('');
+                        }} 
+                      />
                     </div>
-                  ) : vehicleError ? (
-                    <div className="p-4 border border-destructive rounded-lg bg-destructive/10">
-                      <p className="text-sm text-destructive">{vehicleError}</p>
-                    </div>
-                  ) : (
-                    <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select vehicle type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {vehicleTypes.map((vehicle) => (
-                          <SelectItem key={vehicle.id} value={vehicle.id}>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xl">{vehicle.icon_emoji || '🚗'}</span>
-                              <div>
-                                <div className="font-medium">{vehicle.name}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  ₱{vehicle.base_price} base + ₱{vehicle.price_per_km}/km • Max {vehicle.max_weight_kg}kg
+                  </div>
+
+                  {useFleetVehicles ? (
+                    // Fleet Vehicle Selection
+                    loadingFleet ? (
+                      <div className="flex items-center justify-center p-4 border rounded-lg">
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        <span className="text-sm text-muted-foreground">Loading fleet...</span>
+                      </div>
+                    ) : fleetError ? (
+                      <div className="p-4 border border-destructive rounded-lg bg-destructive/10">
+                        <p className="text-sm text-destructive">{fleetError}</p>
+                      </div>
+                    ) : fleetVehicles.length === 0 ? (
+                      <div className="p-4 border border-dashed rounded-lg bg-muted/50">
+                        <p className="text-sm text-muted-foreground text-center">
+                          No fleet vehicles available. Add vehicles in the Fleet page.
+                        </p>
+                      </div>
+                    ) : (
+                      <Select value={selectedFleetVehicle} onValueChange={setSelectedFleetVehicle}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select fleet vehicle" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {fleetVehicles.map((vehicle) => (
+                            <SelectItem key={vehicle.id} value={vehicle.id}>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xl">{vehicle.vehicle_type?.icon_emoji || '🚗'}</span>
+                                <div>
+                                  <div className="font-medium">
+                                    {vehicle.vehicle_type?.name} - {vehicle.license_plate}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {vehicle.assigned_driver?.user_profiles ? `${vehicle.assigned_driver.user_profiles.first_name} ${vehicle.assigned_driver.user_profiles.last_name}` : 'Unassigned'} • {vehicle.assigned_driver?.is_online ? 'Online' : 'Offline'}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )
+                  ) : (
+                    // Public Vehicle Type Selection
+                    loadingVehicles ? (
+                      <div className="flex items-center justify-center p-4 border rounded-lg">
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        <span className="text-sm text-muted-foreground">Loading vehicles...</span>
+                      </div>
+                    ) : vehicleError ? (
+                      <div className="p-4 border border-destructive rounded-lg bg-destructive/10">
+                        <p className="text-sm text-destructive">{vehicleError}</p>
+                      </div>
+                    ) : (
+                      <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select vehicle type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {vehicleTypes.map((vehicle) => (
+                            <SelectItem key={vehicle.id} value={vehicle.id}>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xl">{vehicle.icon_emoji || '🚗'}</span>
+                                <div>
+                                  <div className="font-medium">{vehicle.name}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    ₱{vehicle.base_price} base + ₱{vehicle.price_per_km}/km • Max {vehicle.max_weight_kg}kg
+                                  </div>
+                                </div>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )
                   )}
                 </div>
 
@@ -651,6 +889,222 @@ export default function OrdersPage() {
 
               <Separator />
 
+              {/* Order Details - Expandable */}
+              <Collapsible
+                open={isOrderDetailsExpanded}
+                onOpenChange={setIsOrderDetailsExpanded}
+                className="space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label className="text-base font-semibold flex items-center gap-2">
+                      <Receipt className="h-4 w-4" />
+                      Order Details (Optional)
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Add items, prices, tax, and fees like Shipday
+                    </p>
+                  </div>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="ghost" size="sm">
+                      {isOrderDetailsExpanded ? (
+                        <>
+                          <ChevronUp className="h-4 w-4 mr-2" />
+                          Collapse
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="h-4 w-4 mr-2" />
+                          Expand
+                        </>
+                      )}
+                    </Button>
+                  </CollapsibleTrigger>
+                </div>
+
+                <CollapsibleContent className="space-y-4">
+                  {/* Order Items Table */}
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[40%]">Item Name</TableHead>
+                          <TableHead className="w-[15%]">Qty</TableHead>
+                          <TableHead className="w-[20%]">Unit Price (₱)</TableHead>
+                          <TableHead className="w-[20%] text-right">Total (₱)</TableHead>
+                          <TableHead className="w-[5%]"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {orderItems.map((item, index) => (
+                          <TableRow key={item.id}>
+                            <TableCell>
+                              <Input
+                                placeholder="e.g., Chicken Adobo"
+                                value={item.name}
+                                onChange={(e) => updateOrderItem(item.id, 'name', e.target.value)}
+                                className="h-9"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min="1"
+                                value={item.quantity}
+                                onChange={(e) => updateOrderItem(item.id, 'quantity', parseInt(e.target.value) || 1)}
+                                className="h-9"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={item.unitPrice}
+                                onChange={(e) => updateOrderItem(item.id, 'unitPrice', parseFloat(e.target.value) || 0)}
+                                className="h-9"
+                              />
+                            </TableCell>
+                            <TableCell className="text-right font-medium">
+                              ₱{(item.quantity * item.unitPrice).toFixed(2)}
+                            </TableCell>
+                            <TableCell>
+                              {orderItems.length > 1 && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => removeOrderItem(item.id)}
+                                  className="h-8 w-8 p-0"
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addOrderItem}
+                    className="w-full"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Item
+                  </Button>
+
+                  <Separator />
+
+                  {/* Order Summary Calculations */}
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="tax-percentage">Tax (%)</Label>
+                        <Input
+                          id="tax-percentage"
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          max="100"
+                          placeholder="0"
+                          value={taxPercentage || ''}
+                          onChange={(e) => setTaxPercentage(parseFloat(e.target.value) || 0)}
+                          className="mt-1.5"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="delivery-fee-override">Delivery Fee (₱)</Label>
+                        <Input
+                          id="delivery-fee-override"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="Auto-calculated"
+                          value={deliveryFee || ''}
+                          onChange={(e) => setDeliveryFee(parseFloat(e.target.value) || 0)}
+                          className="mt-1.5"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="tip-amount">Tip (₱)</Label>
+                        <Input
+                          id="tip-amount"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="0"
+                          value={tipAmount || ''}
+                          onChange={(e) => setTipAmount(parseFloat(e.target.value) || 0)}
+                          className="mt-1.5"
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="discount-amount">Discount (₱)</Label>
+                        <Input
+                          id="discount-amount"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="0"
+                          value={discountAmount || ''}
+                          onChange={(e) => setDiscountAmount(parseFloat(e.target.value) || 0)}
+                          className="mt-1.5"
+                        />
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    {/* Order Total Summary */}
+                    <Card className="bg-muted/30">
+                      <CardContent className="pt-4 space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Subtotal</span>
+                          <span className="font-medium">₱{orderTotals.subtotal.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Tax ({taxPercentage}%)</span>
+                          <span className="font-medium">₱{orderTotals.tax.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Delivery Fee</span>
+                          <span className="font-medium">₱{deliveryFee.toFixed(2)}</span>
+                        </div>
+                        {tipAmount > 0 && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Tip</span>
+                            <span className="font-medium">₱{tipAmount.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {discountAmount > 0 && (
+                          <div className="flex justify-between text-sm text-green-600">
+                            <span>Discount</span>
+                            <span className="font-medium">-₱{discountAmount.toFixed(2)}</span>
+                          </div>
+                        )}
+                        <Separator />
+                        <div className="flex justify-between">
+                          <span className="font-semibold">Grand Total</span>
+                          <span className="text-xl font-bold text-primary">
+                            ₱{orderTotals.grandTotal.toFixed(2)}
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+
+              <Separator />
+
               {/* Payment Options */}
               <div className="space-y-4">
                 <Label className="text-base font-semibold">Payment</Label>
@@ -714,6 +1168,12 @@ export default function OrdersPage() {
                         id="schedule-date"
                         type="date"
                         className="mt-1.5"
+                        value={scheduledTime.split('T')[0] || ''}
+                        onChange={(e) => {
+                          const date = e.target.value;
+                          const time = scheduledTime.split('T')[1] || '00:00';
+                          setScheduledTime(`${date}T${time}`);
+                        }}
                       />
                     </div>
                     <div>
@@ -722,6 +1182,12 @@ export default function OrdersPage() {
                         id="schedule-time"
                         type="time"
                         className="mt-1.5"
+                        value={scheduledTime.split('T')[1] || ''}
+                        onChange={(e) => {
+                          const date = scheduledTime.split('T')[0] || new Date().toISOString().split('T')[0];
+                          const time = e.target.value;
+                          setScheduledTime(`${date}T${time}`);
+                        }}
                       />
                     </div>
                   </div>
@@ -786,7 +1252,11 @@ export default function OrdersPage() {
       <button
         onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
         className={`fixed ${
-          isSidebarCollapsed ? 'left-0' : 'left-[min(30vw,450px)] xl:left-[420px]'
+          isSidebarCollapsed 
+            ? 'left-0' 
+            : isOrderDetailsExpanded
+              ? 'left-[min(65vw,800px)]'
+              : 'left-[min(30vw,450px)] xl:left-[420px]'
         } top-1/2 -translate-y-1/2 z-20 bg-background border border-l-0 rounded-r-md p-2 hover:bg-muted transition-all duration-300 shadow-lg`}
         aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       >
@@ -796,14 +1266,13 @@ export default function OrdersPage() {
       {/* Map Container - Dominant Right Side */}
       <div className="flex-1 relative">
         {/* Memoize DeliveryMap to prevent re-renders on form input changes */}
-        {useMemo(() => (
-          <DeliveryMap 
-            pickup={demoPickup}
-            dropoffs={demoDropoffs}
-            className="absolute inset-0"
-            onRouteCalculated={handleRouteCalculated}
-          />
-        ), [demoPickup, demoDropoffs, handleRouteCalculated])}
+        <DeliveryMap 
+          key={`${demoPickup?.lat},${demoPickup?.lng}-${demoDropoffs.map(d => `${d.lat},${d.lng}`).join('-')}`}
+          pickup={demoPickup}
+          dropoffs={demoDropoffs}
+          className="absolute inset-0"
+          onRouteCalculated={handleRouteCalculated}
+        />
         
         {/* Floating Controls on Map */}
         <div className="absolute top-4 left-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-3 space-y-2">

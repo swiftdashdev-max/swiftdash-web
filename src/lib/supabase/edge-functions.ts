@@ -26,10 +26,12 @@ export class EdgeFunctions {
   }
 
   /**
-   * Create single delivery using Edge Function
+   * Create single delivery using Edge Function (Web version with Mapbox & VAT)
    */
   async bookDelivery(params: {
-    vehicleTypeId: string;
+    vehicleTypeId?: string;
+    fleetVehicleId?: string;
+    assignmentType?: 'manual' | 'auto';
     pickup: {
       address: string;
       location: { lat: number; lng: number };
@@ -54,8 +56,10 @@ export class EdgeFunctions {
       paymentMethod?: 'cash' | 'creditCard' | 'debitCard' | 'maya';
       paymentStatus?: 'pending' | 'paid' | 'failed';
     };
+    isScheduled?: boolean;
+    scheduledPickupTime?: string;
   }) {
-    const { data, error } = await this.supabase.functions.invoke('book-delivery', {
+    const { data, error } = await this.supabase.functions.invoke('book_delivery_web', {
       body: params
     });
 
@@ -67,10 +71,12 @@ export class EdgeFunctions {
   }
 
   /**
-   * Create multi-stop delivery using Edge Function
+   * Create multi-stop delivery using Edge Function (Web version with Mapbox & VAT)
    */
   async createMultiStopDelivery(params: {
-    vehicleTypeId: string;
+    vehicleTypeId?: string;
+    fleetVehicleId?: string;
+    assignmentType?: 'manual' | 'auto';
     pickup: {
       address: string;
       location: { lat: number; lng: number };
@@ -84,6 +90,8 @@ export class EdgeFunctions {
       contactName: string;
       contactPhone: string;
       instructions?: string;
+      packageDescription?: string;
+      packageWeight?: number;
     }>;
     package?: {
       description?: string;
@@ -98,7 +106,7 @@ export class EdgeFunctions {
     isScheduled?: boolean;
     scheduledPickupTime?: string;
   }) {
-    const { data, error } = await this.supabase.functions.invoke('create-multi-stop-delivery', {
+    const { data, error } = await this.supabase.functions.invoke('book_multi_stop_delivery_web', {
       body: params
     });
 
@@ -113,7 +121,7 @@ export class EdgeFunctions {
    * Pair driver with delivery using Edge Function
    */
   async pairDriver(deliveryId: string) {
-    const { data, error } = await this.supabase.functions.invoke('pair-driver', {
+    const { data, error } = await this.supabase.functions.invoke('pair-business-driver', {
       body: { deliveryId }
     });
 

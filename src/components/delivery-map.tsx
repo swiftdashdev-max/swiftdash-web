@@ -40,7 +40,7 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex',
+      style: 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex', // Custom SwiftDash style
       center: [121.0340, 14.5995], // Metro Manila
       zoom: 11,
       pitch: 45,
@@ -82,6 +82,24 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     return () => {
       map.current?.remove();
       map.current = null;
+    };
+  }, []);
+
+  // Handle window resize to adjust map
+  useEffect(() => {
+    if (!map.current) return;
+
+    const handleResize = () => {
+      if (map.current) {
+        map.current.resize();
+        console.log('🗺️ Map resized');
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
     };
   }, []);
 

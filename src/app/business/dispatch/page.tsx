@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { pairDriver } from '@/lib/supabase/edge-functions';
+import { useUserContext } from '@/lib/supabase/user-context';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
@@ -65,8 +67,10 @@ interface Delivery {
   dropoff_address: string;
   dropoff_stops?: any[];
   vehicle_type_id: string;
-  estimated_distance: number;
-  estimated_cost: number;
+  distance_km: number;
+  estimated_distance?: number;
+  total_price: number;
+  estimated_cost?: number;
   is_scheduled: boolean;
   scheduled_pickup_time?: string;
   created_at: string;
@@ -75,40 +79,150 @@ interface Delivery {
 
 interface Driver {
   id: string;
-  full_name: string;
-  phone: string;
-  vehicle_type: string;
-  status: 'available' | 'busy' | 'offline';
-  rating: number;
+  vehicle_type_id: string;
+  is_online: boolean;
+  rating?: number;
+  vehicle_model?: string;
+  plate_number?: string;
+  employment_type?: string;
+  managed_by_business_id?: string;
+  full_name?: string;
+  phone?: string;
 }
 
 export default function DispatchPage() {
   const router = useRouter();
   const supabase = createClient();
+  const { businessId, loading: userLoading } = useUserContext();
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(true);
+  const [realtimeUpdates, setRealtimeUpdates] = useState(0); // Track real-time updates
   const [selectedDeliveries, setSelectedDeliveries] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignmentMode, setAssignmentMode] = useState<'auto' | 'manual'>('auto');
+  const [selectedDriver, setSelectedDriver] = useState<string>('');
   const [assigning, setAssigning] = useState(false);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (!userLoading && businessId) {
+      fetchData();
+      
+      // Set up real-time subscriptions
+      const deliveriesChannel = supabase
+        .channel('deliveries-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'deliveries',
+            filter: `business_id=eq.${businessId}`,
+          },
+          (payload) => {
+            console.log('🔄 Deliveries real-time update:', payload);
+            setRealtimeUpdates(prev => prev + 1);
+            // Refetch data when deliveries change
+            fetchData();
+          }
+        )
+        .subscribe();
+
+      const driversChannel = supabase
+        .channel('drivers-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'driver_profiles',
+          },
+          (payload) => {
+            console.log('🔄 Drivers real-time update:', payload);
+            setRealtimeUpdates(prev => prev + 1);
+            // Update drivers list in real-time
+            if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+              const updatedDriverId = payload.new.id;
+              const updatedIsOnline = payload.new.is_online;
+              
+              if (updatedIsOnline === true) {
+                // Fetch the complete driver data
+                supabase
+                  .from('driver_profiles')
+                  .select(`
+                    id,
+                    vehicle_type_id,
+                    is_online,
+                    rating,
+                    vehicle_model,
+                    plate_number,
+                    employment_type,
+                    managed_by_business_id
+                  `)
+                  .eq('id', updatedDriverId)
+                  .eq('is_online', true)
+                  .single()
+                  .then(async ({ data, error }) => {
+                    if (!error && data) {
+                      // Fetch user profile for this driver
+                      const { data: userProfile } = await supabase
+                        .from('user_profiles')
+                        .select('first_name, last_name, phone_number')
+                        .eq('id', data.id)
+                        .single();
+                        
+                      const driverWithProfile: Driver = {
+                        ...data,
+                        full_name: userProfile ? `${userProfile.first_name} ${userProfile.last_name}` : `Driver ${data.id.substring(0, 8)}`,
+                        phone: userProfile?.phone_number || 'N/A'
+                      };
+                      
+                      setDrivers(prev => {
+                        const filtered = prev.filter(d => d.id !== updatedDriverId);
+                        return [...filtered, driverWithProfile];
+                      });
+                    }
+                  });
+              } else {
+                // Remove driver from list if not online
+                setDrivers(prev => prev.filter(d => d.id !== updatedDriverId));
+              }
+            } else if (payload.eventType === 'DELETE') {
+              setDrivers(prev => prev.filter(d => d.id !== payload.old.id));
+            }
+          }
+        )
+        .subscribe();
+
+      // Cleanup subscriptions on unmount
+      return () => {
+        supabase.removeChannel(deliveriesChannel);
+        supabase.removeChannel(driversChannel);
+      };
+    }
+  }, [userLoading, businessId]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
 
-      // Fetch deliveries (pending, scheduled, assigned but not active)
-      // Backend creates deliveries with status 'pending' by default
+      if (!businessId) {
+        console.error('❌ No business_id available');
+        setLoading(false);
+        return;
+      }
+
+      // Fetch deliveries (pending, driver_offered, driver_assigned - not yet active)
+      // Status 'pending' = awaiting driver assignment
+      // Status 'driver_offered' = driver has been offered the job
+      // Status 'driver_assigned' = driver accepted but hasn't started pickup
       const { data: deliveriesData, error: deliveriesError } = await supabase
         .from('deliveries')
         .select('*')
-        .in('status', ['pending', 'scheduled', 'assigned'])
+        .eq('business_id', businessId)
+        .in('status', ['pending', 'driver_offered', 'driver_assigned'])
         .order('created_at', { ascending: false });
 
       if (deliveriesError) {
@@ -118,17 +232,57 @@ export default function DispatchPage() {
         console.log('📦 Deliveries loaded:', deliveriesData);
       }
 
-      // Fetch available drivers
+      // Fetch available drivers - just driver_profiles data for now
       const { data: driversData, error: driversError } = await supabase
-        .from('drivers')
-        .select('*')
-        .eq('status', 'available');
+        .from('driver_profiles')
+        .select(`
+          id,
+          vehicle_type_id,
+          is_online,
+          rating,
+          vehicle_model,
+          plate_number,
+          employment_type,
+          managed_by_business_id
+        `)
+        .eq('is_online', true);
 
       if (driversError) {
         console.error('❌ Error fetching drivers:', driversError);
+        console.error('❌ Driver error details:', JSON.stringify(driversError, null, 2));
       } else {
-        setDrivers(driversData || []);
         console.log('🚗 Drivers loaded:', driversData);
+        console.log('🚗 Number of online drivers:', driversData?.length || 0);
+        
+        // Fetch user profile data for each driver
+        const driversWithProfiles: Driver[] = [];
+        if (driversData && driversData.length > 0) {
+          for (const driver of driversData) {
+            try {
+              // Try user_profiles with correct column names
+              const { data: userProfile } = await supabase
+                .from('user_profiles')
+                .select('first_name, last_name, phone_number')
+                .eq('id', driver.id)
+                .single();
+                
+              driversWithProfiles.push({
+                ...driver,
+                full_name: userProfile ? `${userProfile.first_name} ${userProfile.last_name}` : `Driver ${driver.id.substring(0, 8)}`,
+                phone: userProfile?.phone_number || 'N/A'
+              });
+            } catch (profileError) {
+              console.warn(`Could not fetch profile for driver ${driver.id}`);
+              driversWithProfiles.push({
+                ...driver,
+                full_name: `Driver ${driver.id.substring(0, 8)}`,
+                phone: 'N/A'
+              });
+            }
+          }
+        }
+        
+        setDrivers(driversWithProfiles);
       }
     } catch (error) {
       console.error('❌ Error fetching data:', error);
@@ -157,6 +311,7 @@ export default function DispatchPage() {
       alert('Please select at least one delivery to assign');
       return;
     }
+    setSelectedDriver(''); // Reset driver selection
     setShowAssignModal(true);
   };
 
@@ -182,6 +337,51 @@ export default function DispatchPage() {
     } catch (error) {
       console.error('❌ Error auto-assigning:', error);
       alert('Failed to auto-assign deliveries');
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const handleManualAssign = async () => {
+    if (!selectedDriver) {
+      alert('Please select a driver');
+      return;
+    }
+
+    try {
+      setAssigning(true);
+
+      // Use Edge Function for manual assignment
+      for (const deliveryId of selectedDeliveries) {
+        try {
+          const result = await supabase.functions.invoke('pair-business-driver', {
+            body: { 
+              deliveryId,
+              mode: 'manual',
+              driverId: selectedDriver
+            }
+          });
+
+          if (result.error) {
+            throw new Error(result.error.message);
+          }
+
+          console.log(`✅ Successfully manually assigned driver to delivery ${deliveryId}:`, result.data);
+        } catch (err) {
+          console.error(`❌ Error manually assigning driver to ${deliveryId}:`, err);
+          throw err;
+        }
+      }
+
+      // Refresh data and close modal
+      await fetchData();
+      setShowAssignModal(false);
+      setSelectedDeliveries([]);
+      setSelectedDriver('');
+      alert(`Successfully assigned driver to ${selectedDeliveries.length} delivery(ies)`);
+    } catch (error) {
+      console.error('❌ Error manually assigning:', error);
+      alert('Failed to manually assign deliveries');
     } finally {
       setAssigning(false);
     }
@@ -216,24 +416,24 @@ export default function DispatchPage() {
 
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: any; label: string; icon: any }> = {
-      pending_dispatch: {
+      pending: {
         variant: 'secondary',
-        label: 'Pending Dispatch',
+        label: 'Pending',
         icon: AlertCircle,
       },
-      scheduled: {
+      driver_offered: {
         variant: 'outline',
-        label: 'Scheduled',
-        icon: Calendar,
+        label: 'Driver Offered',
+        icon: Clock,
       },
-      assigned: {
+      driver_assigned: {
         variant: 'default',
-        label: 'Assigned',
+        label: 'Driver Assigned',
         icon: CheckCircle2,
       },
     };
 
-    const config = variants[status] || variants.pending_dispatch;
+    const config = variants[status] || variants.pending;
     const Icon = config.icon;
 
     return (
@@ -246,20 +446,20 @@ export default function DispatchPage() {
 
   const filteredDeliveries = deliveries.filter(delivery => {
     const matchesSearch =
-      delivery.tracking_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      delivery.pickup_address.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      delivery.dropoff_address.toLowerCase().includes(searchQuery.toLowerCase());
+      (delivery.tracking_number?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+      (delivery.pickup_address?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+      (delivery.dropoff_address?.toLowerCase() || '').includes(searchQuery.toLowerCase());
 
     const matchesStatus = statusFilter === 'all' || delivery.status === statusFilter;
 
     return matchesSearch && matchesStatus;
   });
 
-  const pendingCount = deliveries.filter(d => d.status === 'pending_dispatch').length;
-  const scheduledCount = deliveries.filter(d => d.status === 'scheduled').length;
-  const assignedCount = deliveries.filter(d => d.status === 'assigned').length;
+  const pendingCount = deliveries.filter(d => d.status === 'pending').length;
+  const offeredCount = deliveries.filter(d => d.status === 'driver_offered').length;
+  const assignedCount = deliveries.filter(d => d.status === 'driver_assigned').length;
 
-  if (loading) {
+  if (loading || userLoading) {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
         <div className="text-center">
@@ -285,6 +485,10 @@ export default function DispatchPage() {
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
+          <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-muted text-sm">
+            <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
+            Live Updates {realtimeUpdates > 0 && `(${realtimeUpdates})`}
+          </div>
           <Button onClick={() => router.push('/business/orders')}>
             <Package className="h-4 w-4 mr-2" />
             Create Delivery
@@ -318,18 +522,18 @@ export default function DispatchPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Scheduled</CardTitle>
-            <Calendar className="h-4 w-4 text-blue-500" />
+            <CardTitle className="text-sm font-medium">Driver Offered</CardTitle>
+            <Clock className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{scheduledCount}</div>
-            <p className="text-xs text-muted-foreground mt-1">Future deliveries</p>
+            <div className="text-2xl font-bold">{offeredCount}</div>
+            <p className="text-xs text-muted-foreground mt-1">Awaiting acceptance</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Assigned</CardTitle>
+            <CardTitle className="text-sm font-medium">Driver Assigned</CardTitle>
             <CheckCircle2 className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
@@ -393,9 +597,9 @@ export default function DispatchPage() {
             <Tabs value={statusFilter} onValueChange={setStatusFilter} className="w-auto">
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="pending_dispatch">Pending</TabsTrigger>
-                <TabsTrigger value="scheduled">Scheduled</TabsTrigger>
-                <TabsTrigger value="assigned">Assigned</TabsTrigger>
+                <TabsTrigger value="pending">Pending</TabsTrigger>
+                <TabsTrigger value="driver_offered">Offered</TabsTrigger>
+                <TabsTrigger value="driver_assigned">Assigned</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -472,8 +676,8 @@ export default function DispatchPage() {
                         {delivery.dropoff_address}
                       </div>
                     </TableCell>
-                    <TableCell>{delivery.estimated_distance.toFixed(1)} km</TableCell>
-                    <TableCell className="font-semibold">₱{delivery.estimated_cost}</TableCell>
+                    <TableCell>{(delivery.distance_km || delivery.estimated_distance || 0).toFixed(1)} km</TableCell>
+                    <TableCell className="font-semibold">₱{delivery.total_price || delivery.estimated_cost || 0}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(delivery.created_at).toLocaleDateString()}
                     </TableCell>
@@ -567,17 +771,52 @@ export default function DispatchPage() {
                   <div className="flex-1">
                     <h4 className="font-semibold mb-1">Manual Assign</h4>
                     <p className="text-sm text-muted-foreground">
-                      Choose drivers manually for each delivery (coming soon)
+                      Choose a specific driver for the selected deliveries
                     </p>
                   </div>
                 </CardContent>
               </Card>
             </div>
 
+            {/* Driver Selection for Manual Mode */}
+            {assignmentMode === 'manual' && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Select Driver</span>
+                </div>
+                <Select value={selectedDriver} onValueChange={setSelectedDriver}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose an available driver..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {drivers.filter(d => d.is_online === true).length === 0 ? (
+                      <div className="p-2 text-sm text-muted-foreground text-center">
+                        <Users className="h-4 w-4 mx-auto mb-1 opacity-50" />
+                        No drivers currently online
+                        <div className="text-xs mt-1">Drivers will appear here automatically when they come online</div>
+                      </div>
+                    ) : (
+                      drivers
+                        .filter(d => d.is_online === true)
+                        .map((driver) => (
+                          <SelectItem key={driver.id} value={driver.id}>
+                            <div className="flex items-center gap-2">
+                              <div className="h-2 w-2 bg-green-500 rounded-full"></div>
+                              {driver.full_name} - {driver.phone}
+                            </div>
+                          </SelectItem>
+                        ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
               <Truck className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm text-muted-foreground">
-                {drivers.filter(d => d.status === 'available').length} drivers available
+                {drivers.filter(d => d.is_online === true).length} drivers available
               </span>
             </div>
           </div>
@@ -586,8 +825,8 @@ export default function DispatchPage() {
               Cancel
             </Button>
             <Button
-              onClick={assignmentMode === 'auto' ? handleAutoAssign : () => {}}
-              disabled={assigning || (assignmentMode === 'manual')}
+              onClick={assignmentMode === 'auto' ? handleAutoAssign : handleManualAssign}
+              disabled={assigning || (assignmentMode === 'manual' && !selectedDriver)}
             >
               {assigning ? (
                 <>
@@ -597,7 +836,7 @@ export default function DispatchPage() {
               ) : (
                 <>
                   <UserCheck className="h-4 w-4 mr-2" />
-                  {assignmentMode === 'auto' ? 'Auto Assign' : 'Manual Assign'}
+                  {assignmentMode === 'auto' ? 'Auto Assign' : 'Assign to Driver'}
                 </>
               )}
             </Button>

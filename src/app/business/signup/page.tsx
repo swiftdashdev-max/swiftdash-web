@@ -23,6 +23,7 @@ export default function BusinessSignup() {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const router = useRouter();
   const supabase = createClient();
 
@@ -37,6 +38,7 @@ export default function BusinessSignup() {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccess('');
 
     if (formData.password !== formData.confirmPassword) {
       setError('Passwords do not match');
@@ -50,28 +52,54 @@ export default function BusinessSignup() {
       return;
     }
 
-    const { error } = await supabase.auth.signUp({
-      email: formData.email,
-      password: formData.password,
-      options: {
-        data: {
-          business_name: formData.businessName,
+    try {
+      // Use admin API to create auto-confirmed business user
+      const response = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phone_number: formData.phone,
           first_name: formData.firstName,
           last_name: formData.lastName,
-          phone_number: formData.phone,
-          user_type: 'business', // Set user type for business registration
-        },
-      },
-    });
+          user_type: 'business',
+          business_name: formData.businessName,
+          email: formData.email,
+          password: formData.password, // Send the user's actual password
+          status: 'active'
+        }),
+      });
 
-    if (error) {
-      setError(error.message);
-    } else {
-      // Redirect to a page that tells the user to check their email
-      router.push('/login?message=Check your email to continue');
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to create account');
+      }
+
+      // Show success message
+      setSuccess('Account created successfully! Logging you in...');
+
+      // Auto-login the user with their password
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: formData.email,
+        password: formData.password // Use the user's actual password
+      });
+
+      if (signInError) {
+        setError('Account created but auto-login failed. Please login manually.');
+        setLoading(false);
+        return;
+      }
+
+      // Small delay to show success message
+      setTimeout(() => {
+        router.push('/business/dashboard');
+      }, 1000);
+    } catch (err: any) {
+      setError(err.message || 'An error occurred during signup');
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -106,6 +134,12 @@ export default function BusinessSignup() {
               {error && (
                 <Alert variant="destructive">
                   <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              {success && (
+                <Alert className="bg-green-50 text-green-800 border-green-200">
+                  <AlertDescription>{success}</AlertDescription>
                 </Alert>
               )}
 

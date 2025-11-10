@@ -64,7 +64,16 @@ export async function POST(request: NextRequest) {
 
     // Generate email if not provided (required for Supabase Auth)
     const email = userData.email || `${userData.phone_number.replace('+', '')}@temp.swiftdash.com`
-    const tempPassword = 'TempPass123!' // Temporary password, user can reset it later
+    
+    // Password is required
+    if (!userData.password) {
+      return NextResponse.json(
+        { error: 'Password is required' },
+        { status: 400 }
+      )
+    }
+
+    const password = userData.password
 
     let authUser;
     let newUser;
@@ -74,7 +83,7 @@ export async function POST(request: NextRequest) {
       console.log('Creating authenticated user with admin privileges...')
       const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
         email: email,
-        password: tempPassword,
+        password: password,
         phone: userData.phone_number,
         email_confirm: true, // Auto-confirm email
         phone_confirm: true, // Auto-confirm phone
@@ -98,9 +107,41 @@ export async function POST(request: NextRequest) {
         throw new Error('Auth user creation returned null')
       }
 
+      // If user is a business type, create business account first
+      let businessAccountId = null
+      if (userData.user_type === 'business' && userData.business_name) {
+        console.log('Creating business account...')
+        const { data: businessAccount, error: businessError } = await supabaseAdmin
+          .from('business_accounts')
+          .insert([{
+            business_name: userData.business_name,
+            business_email: email,
+            business_phone: userData.phone_number,
+            primary_contact_name: `${userData.first_name} ${userData.last_name}`,
+            primary_contact_email: email,
+            primary_contact_phone: userData.phone_number,
+            subscription_tier: 'starter',
+            account_status: 'active',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }])
+          .select()
+          .single()
+
+        if (businessError) {
+          console.error('Error creating business account:', businessError)
+          // Clean up auth user if business creation fails
+          await supabaseAdmin.auth.admin.deleteUser(authUser.id)
+          throw new Error(`Business account creation failed: ${businessError.message}`)
+        }
+
+        businessAccountId = businessAccount.id
+        console.log('✅ Business account created successfully:', businessAccountId)
+      }
+
       // The user profile should be automatically created by a database trigger
       // Let's check if it exists first, then create it if it doesn't
-      const { data: existingProfile, error: checkProfileError } = await supabase
+      const { data: existingProfile, error: checkProfileError } = await supabaseAdmin
         .from('user_profiles')
         .select('*')
         .eq('id', authUser.id)
@@ -117,12 +158,13 @@ export async function POST(request: NextRequest) {
           user_type: userData.user_type,
           status: userData.status || 'active',
           business_name: userData.business_name || null,
+          business_id: businessAccountId, // Link to business account if created
           profile_image_url: null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         }
 
-        const { data: profileData, error: profileError } = await supabase
+        const { data: profileData, error: profileError } = await supabaseAdmin
           .from('user_profiles')
           .insert([userProfileData])
           .select()
@@ -130,8 +172,11 @@ export async function POST(request: NextRequest) {
 
         if (profileError) {
           console.error('Error creating user profile:', profileError)
-          // Clean up auth user if profile creation fails
+          // Clean up auth user and business account if profile creation fails
           await supabaseAdmin.auth.admin.deleteUser(authUser.id)
+          if (businessAccountId) {
+            await supabaseAdmin.from('business_accounts').delete().eq('id', businessAccountId)
+          }
           throw new Error(`Profile creation failed: ${profileError.message}`)
         }
 
@@ -141,9 +186,25 @@ export async function POST(request: NextRequest) {
         console.error('Error checking user profile:', checkProfileError)
         throw new Error(`Profile check failed: ${checkProfileError.message}`)
       } else {
-        // Profile already exists (created by trigger)
-        newUser = existingProfile
-        console.log('✅ User profile already exists (created by trigger)')
+        // Profile already exists (created by trigger), update it with business_id
+        if (businessAccountId) {
+          const { data: updatedProfile, error: updateError } = await supabaseAdmin
+            .from('user_profiles')
+            .update({ business_id: businessAccountId })
+            .eq('id', authUser.id)
+            .select()
+            .single()
+
+          if (updateError) {
+            console.error('Error updating user profile with business_id:', updateError)
+          } else {
+            newUser = updatedProfile
+            console.log('✅ User profile updated with business_id')
+          }
+        } else {
+          newUser = existingProfile
+          console.log('✅ User profile already exists (created by trigger)')
+        }
       }
 
     } catch (error) {
@@ -156,15 +217,18 @@ export async function POST(request: NextRequest) {
 
     // If user is a driver, create driver profile
     if (userData.user_type === 'driver') {
-      const { error: driverError } = await supabase
+      const { error: driverError } = await supabaseAdmin
         .from('driver_profiles')
         .insert([{
-          user_id: newUser.id,
-          is_verified: false,
+          id: newUser.id, // driver_profiles.id references auth.users.id
+          is_verified: true, // Set to true so drivers can receive deliveries immediately
           is_online: false,
+          is_available: false,
+          current_status: 'offline',
+          employment_type: 'independent', // Default to independent, will be updated if added to fleet
           rating: 5.0,
           total_deliveries: 0,
-          vehicle_type_id: null,
+          vehicle_type_id: userData.vehicle_type_id || null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         }])
@@ -172,6 +236,8 @@ export async function POST(request: NextRequest) {
       if (driverError) {
         console.error('Error creating driver profile:', driverError)
         // Don't fail the request, but log the error
+      } else {
+        console.log('✅ Driver profile created successfully')
       }
     }
 
@@ -186,11 +252,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       user: newUser,
-      credentials: {
-        email: email,
-        password: tempPassword,
-        isTemporaryEmail: !userData.email // Flag to indicate if email was auto-generated
-      },
       message: `${userData.user_type} account created successfully`
     })
 

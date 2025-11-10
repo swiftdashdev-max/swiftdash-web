@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
@@ -38,18 +38,15 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { createClient } from '@/lib/supabase/client';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { useUserContext } from '@/lib/supabase/user-context';
 
 const navigation = [
   { name: 'Dashboard', href: '/business/dashboard', icon: LayoutDashboard },
   { name: 'Orders', href: '/business/orders', icon: Package },
-  { name: 'Matching', href: '/business/matching', icon: UserCheck },
-  { name: 'Tracking', href: '/business/tracking', icon: Navigation },
   { name: 'Dispatch', href: '/business/dispatch', icon: MapPin },
-  { name: 'Drivers', href: '/business/drivers', icon: Truck },
-  { name: 'Team', href: '/business/team', icon: Users },
-  { name: 'Financials', href: '/business/financials', icon: DollarSign },
+  { name: 'Tracking', href: '/business/tracking', icon: Navigation },
+  { name: 'Fleet', href: '/business/fleet', icon: Truck },
   { name: 'Reports', href: '/business/reports', icon: BarChart3 },
-  { name: 'Settings', href: '/business/settings', icon: Settings },
 ];
 
 interface BusinessLayoutProps {
@@ -59,36 +56,50 @@ interface BusinessLayoutProps {
 
 export default function BusinessLayout({ children, currentPath }: BusinessLayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { user, loading } = useUserContext();
   const router = useRouter();
   const supabase = createClient();
 
+  const getInitials = () => {
+    if (!user) return 'BZ';
+    const profile = user.user_metadata;
+    if (profile?.business_name) {
+      return profile.business_name.substring(0, 2).toUpperCase();
+    }
+    if (profile?.first_name && profile?.last_name) {
+      return `${profile.first_name[0]}${profile.last_name[0]}`.toUpperCase();
+    }
+    return user.email?.substring(0, 2).toUpperCase() || 'BZ';
+  };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    router.push('/login');
+    router.push('/business/login');
   };
 
   return (
     <div className="min-h-screen bg-background">
       {/* Top Navigation */}
       <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex h-16 max-w-screen-2xl items-center justify-between">
+        <div className="container flex h-16 max-w-screen-2xl items-center justify-between px-4 md:px-6">
           {/* Left Side: Logo & Mobile Menu */}
-          <div className="flex items-center gap-4">
-            <Link href="/business/dashboard" className="flex items-center space-x-2">
+          <div className="flex items-center gap-2 md:gap-4">
+            <Link href="/business/dashboard" className="flex items-center space-x-2 shrink-0">
               <Image
                 src="/assets/images/swiftdash_logo.png"
                 alt="SwiftDash"
                 width={28}
                 height={28}
+                className="shrink-0"
               />
-              <span className="hidden font-bold sm:inline-block bg-gradient-to-r from-[#1CB8F7] to-[#3B4CCA] bg-clip-text text-transparent">
+              <span className="hidden sm:inline-block font-bold text-sm md:text-base bg-gradient-to-r from-[#1CB8F7] to-[#3B4CCA] bg-clip-text text-transparent whitespace-nowrap">
                 SwiftDash Business
               </span>
             </Link>
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden"
+              className="md:hidden shrink-0"
               onClick={() => setMobileMenuOpen(true)}
             >
               <Menu className="h-5 w-5" />
@@ -96,20 +107,20 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
           </div>
 
           {/* Centered Desktop Navigation */}
-          <div className="hidden md:flex flex-1 justify-center">
-            <nav className="flex items-center gap-6 text-sm font-medium">
+          <div className="hidden md:flex flex-1 justify-center max-w-3xl mx-4">
+            <nav className="flex items-center gap-4 lg:gap-6 text-sm font-medium overflow-x-auto">
               {navigation.map((item) => {
                 const isActive = currentPath === item.href;
                 return (
                   <Link
                     key={item.name}
                     href={item.href}
-                    className={`relative flex items-center space-x-2 transition-colors hover:text-primary ${
+                    className={`relative flex items-center space-x-1.5 whitespace-nowrap transition-colors hover:text-primary ${
                       isActive ? 'text-primary font-semibold' : 'text-muted-foreground'
                     }`}
                   >
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.name}</span>
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    <span className="hidden lg:inline">{item.name}</span>
                     {isActive && (
                       <motion.div 
                         className="absolute -bottom-2 left-0 right-0 h-0.5 bg-primary"
@@ -123,14 +134,14 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
           </div>
 
           {/* Right side controls */}
-          <div className="flex items-center gap-4">
-            {/* Search */}
-            <div className="relative hidden sm:block">
+          <div className="flex items-center gap-1 md:gap-2 shrink-0">
+            {/* Search - Hidden on small screens */}
+            <div className="relative hidden lg:block">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 type="search"
                 placeholder="Search orders..."
-                className="pl-8 w-[150px] lg:w-[250px]"
+                className="pl-8 w-[180px] xl:w-[250px]"
               />
             </div>
 
@@ -139,7 +150,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
               <ThemeToggle />
               
               {/* Notifications */}
-              <Button variant="ghost" size="icon" className="relative h-9 w-9">
+              <Button variant="ghost" size="icon" className="relative h-9 w-9 shrink-0">
                 <Bell className="h-4 w-4" />
                 <Badge className="absolute top-1 right-1 h-4 w-4 flex items-center justify-center rounded-full p-0 text-xs">
                   5
@@ -149,33 +160,39 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
               {/* User Menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" className="relative h-9 w-9 rounded-full">
+                  <Button variant="ghost" className="relative h-9 w-9 rounded-full shrink-0">
                     <Avatar className="h-8 w-8">
-                      <AvatarImage src="/avatars/business.png" alt="Business" />
-                      <AvatarFallback>BZ</AvatarFallback>
+                      <AvatarImage src="/avatars/business.png" alt={user?.user_metadata?.business_name || 'Business'} />
+                      <AvatarFallback>{getInitials()}</AvatarFallback>
                     </Avatar>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent className="w-56" align="end" forceMount>
                   <DropdownMenuLabel className="font-normal">
                     <div className="flex flex-col space-y-1">
-                      <p className="text-sm font-medium leading-none">Business Account</p>
+                      <p className="text-sm font-medium leading-none">
+                        {user?.user_metadata?.business_name || user?.user_metadata?.full_name || 'Business Account'}
+                      </p>
                       <p className="text-xs leading-none text-muted-foreground">
-                        business@company.com
+                        {user?.email || 'Loading...'}
                       </p>
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem>
-                    <User className="mr-2 h-4 w-4" />
-                    <span>Profile</span>
+                  <DropdownMenuItem asChild>
+                    <Link href="/business/profile" className="cursor-pointer">
+                      <User className="mr-2 h-4 w-4" />
+                      <span>Profile</span>
+                    </Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <Settings className="mr-2 h-4 w-4" />
-                    <span>Settings</span>
+                  <DropdownMenuItem asChild>
+                    <Link href="/business/settings" className="cursor-pointer">
+                      <Settings className="mr-2 h-4 w-4" />
+                      <span>Settings</span>
+                    </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleLogout}>
+                  <DropdownMenuItem onClick={handleLogout} className="cursor-pointer">
                     <LogOut className="mr-2 h-4 w-4" />
                     <span>Log out</span>
                   </DropdownMenuItem>
@@ -252,8 +269,8 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
 
       {/* Main Content */}
       <main className={
-        currentPath === '/business/orders' 
-          ? '' // Full width, no padding for orders page
+        currentPath === '/business/orders' || currentPath === '/business/tracking'
+          ? '' // Full width, no padding for orders and tracking pages
           : 'container mx-auto px-4 py-6 max-w-screen-2xl'
       }>
         {children}

@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { createClient } from '@/lib/supabase/client';
 
 export default function BusinessLogin() {
   const [email, setEmail] = useState('');
@@ -16,6 +17,7 @@ export default function BusinessLogin() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const router = useRouter();
+  const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,15 +25,40 @@ export default function BusinessLogin() {
     setError('');
 
     try {
-      // TODO: Implement actual authentication with Supabase
-      // For now, just simulate login
-      if (email === 'business@swiftdash.com' && password === 'business123') {
-        router.push('/business/dashboard');
-      } else {
-        setError('Invalid email or password');
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (signInError) {
+        throw signInError;
       }
-    } catch (err) {
-      setError('An error occurred during login');
+
+      if (!data.user) {
+        throw new Error('No user data returned');
+      }
+
+      // Verify user is a business user
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('user_type')
+        .eq('id', data.user.id)
+        .single();
+
+      if (profileError) {
+        throw new Error('Failed to fetch user profile');
+      }
+
+      if (profile.user_type !== 'business') {
+        await supabase.auth.signOut();
+        throw new Error('This account is not a business account. Please use the correct login portal.');
+      }
+
+      // Redirect to dashboard
+      router.push('/business/dashboard');
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || 'An error occurred during login');
     } finally {
       setLoading(false);
     }
@@ -107,25 +134,12 @@ export default function BusinessLogin() {
               <div className="text-center">
                 <Link 
                   href="/business/forgot-password" 
-                  className="text-sm text-green-600 hover:text-green-500"
+                  className="text-sm text-blue-600 hover:text-blue-500"
                 >
                   Forgot your password?
                 </Link>
               </div>
             </form>
-          </CardContent>
-        </Card>
-
-        {/* Demo Credentials */}
-        <Card className="mt-4 rounded-2xl border border-yellow-200 bg-yellow-50">
-          <CardContent className="pt-4">
-            <p className="text-sm text-yellow-800 mb-2">
-              <strong>Demo Credentials:</strong>
-            </p>
-            <p className="text-sm text-yellow-800">
-              Email: business@swiftdash.com<br />
-              Password: business123
-            </p>
           </CardContent>
         </Card>
 

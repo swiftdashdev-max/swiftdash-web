@@ -110,7 +110,7 @@ export const getDashboardMetrics = async (): Promise<DashboardMetrics> => {
     const { count: activeDrivers } = await supabase
       .from('driver_profiles')
       .select('*', { count: 'exact', head: true })
-      .eq('is_online', true)
+      .eq('current_status', 'online')
 
     // Total users
     const { count: totalUsers } = await supabase
@@ -212,7 +212,7 @@ export const getDriverStats = async (): Promise<DriverStats> => {
       .from('driver_profiles')
       .select(`
         is_verified, 
-        is_online, 
+        current_status, 
         is_available,
         user_profiles!inner(status)
       `)
@@ -221,7 +221,7 @@ export const getDriverStats = async (): Promise<DriverStats> => {
     const stats = {
       total: data?.length || 0,
       verified: data?.filter(d => d.is_verified).length || 0,
-      online: data?.filter(d => d.is_online).length || 0,
+      online: data?.filter(d => d.current_status === 'online').length || 0,
       available: data?.filter(d => d.is_available).length || 0,
       suspended: 0 // We'll get this separately
     }
