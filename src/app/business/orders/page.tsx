@@ -33,7 +33,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { DeliveryMap } from '@/components/delivery-map';
-import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete-optimized';
+import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
 import {
   Package,

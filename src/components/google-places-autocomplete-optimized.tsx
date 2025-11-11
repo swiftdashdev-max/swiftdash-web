@@ -72,7 +72,16 @@ export function GooglePlacesAutocomplete({
 
   // Initialize Google Places services when ready
   useEffect(() => {
-    if (!isReady || error) return;
+    if (!isReady || error) {
+      console.log('⏳ Google Places not ready yet:', { isReady, error });
+      return;
+    }
+
+    // Check if google.maps.places is available
+    if (typeof google === 'undefined' || !google.maps || !google.maps.places) {
+      console.error('❌ Google Maps Places API not loaded!');
+      return;
+    }
 
     try {
       autocompleteService.current = new google.maps.places.AutocompleteService();
@@ -82,7 +91,7 @@ export function GooglePlacesAutocomplete({
       const map = new google.maps.Map(mapDiv, { zoom: 1, center: { lat: 0, lng: 0 } });
       placesService.current = new google.maps.places.PlacesService(map);
       
-      console.log('✅ Google Places services initialized');
+      console.log('✅ Google Places services initialized successfully');
     } catch (err) {
       console.error('❌ Failed to initialize Google Places services:', err);
     }

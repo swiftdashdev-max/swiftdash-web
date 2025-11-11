@@ -170,7 +170,12 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
 
   // Update pickup marker
   useEffect(() => {
-    if (!map.current || !pickup) return;
+    if (!map.current || !pickup) {
+      console.log('⏳ Pickup marker update skipped:', { hasMap: !!map.current, hasPickup: !!pickup });
+      return;
+    }
+
+    console.log('📍 Updating pickup marker:', { lat: pickup.lat, lng: pickup.lng, label: pickup.label });
 
     // Remove existing pickup marker
     if (pickupMarker.current) {
@@ -191,6 +196,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       )
       .addTo(map.current);
 
+    console.log('✅ Pickup marker added to map');
+
     // Fly to pickup location only if this is the first location set
     if (!dropoffs.length) {
       map.current.flyTo({
@@ -203,7 +210,12 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
 
   // Update dropoff markers
   useEffect(() => {
-    if (!map.current) return;
+    if (!map.current) {
+      console.log('⏳ Dropoff markers update skipped - no map');
+      return;
+    }
+
+    console.log('📍 Updating dropoff markers:', { count: dropoffs.length });
 
     // Remove existing dropoff markers
     dropoffMarkers.current.forEach(marker => marker.remove());
@@ -213,6 +225,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
 
     // Add dropoff markers
     dropoffs.forEach((dropoff, index) => {
+      console.log(`  📍 Adding dropoff #${index + 1}:`, { lat: dropoff.lat, lng: dropoff.lng, label: dropoff.label });
+      
       const el = createDropoffMarkerElement(index, dropoffs.length);
 
       const marker = new mapboxgl.Marker({ element: el })
@@ -231,6 +245,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       dropoffMarkers.current.push(marker);
     });
 
+    console.log('✅ Dropoff markers added to map:', dropoffMarkers.current.length);
+
     // Fit map to show all markers if we have both pickup and dropoffs
     if (pickup && dropoffs.length > 0 && map.current) {
       const bounds = new mapboxgl.LngLatBounds();
@@ -241,6 +257,7 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
         padding: { top: 80, bottom: 80, left: 80, right: 80 },
         duration: 1000, // Reduced duration for faster navigation
       });
+      console.log('✅ Map bounds adjusted to show all markers');
     }
   }, [dropoffs, pickup]);
 

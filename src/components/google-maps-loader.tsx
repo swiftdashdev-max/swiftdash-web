@@ -1,7 +1,7 @@
 import Script from 'next/script';
 import { useEffect, useState } from 'react';
 
-const GOOGLE_MAPS_API_KEY = 'AIzaSyANfwae0FJo4S8AG74T72n9XoB95y60mQ8';
+const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyANfwae0FJo4S8AG74T72n9XoB95y60mQ8';
 
 // Global cache for Google Maps API loading state
 let isGoogleMapsLoaded = false;
