@@ -449,14 +449,19 @@ export default function FleetPage() {
 
     try {
       // Validate form
-      if (!driverForm.first_name || !driverForm.last_name || !driverForm.email || 
-          !driverForm.phone_number || !driverForm.password || !driverForm.vehicle_type_id) {
+      if (!driverForm.full_name || !driverForm.email || 
+          !driverForm.phone || !driverForm.password || !driverForm.vehicle_type_id) {
         throw new Error('Please fill in all required fields');
       }
 
       if (driverForm.password.length < 6) {
         throw new Error('Password must be at least 6 characters');
       }
+
+      // Extract first and last name from full name
+      const nameParts = driverForm.full_name.trim().split(' ');
+      const first_name = nameParts[0] || '';
+      const last_name = nameParts.slice(1).join(' ') || '';
 
       // Call admin API to create driver with auth account
       const response = await fetch('/api/admin/users', {
@@ -465,9 +470,9 @@ export default function FleetPage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          phone_number: driverForm.phone_number,
-          first_name: driverForm.first_name,
-          last_name: driverForm.last_name,
+          phone_number: driverForm.phone,
+          first_name,
+          last_name,
           user_type: 'driver',
           email: driverForm.email,
           password: driverForm.password,
@@ -507,10 +512,9 @@ export default function FleetPage() {
 
   const resetDriverForm = () => {
     setDriverForm({
-      first_name: '',
-      last_name: '',
+      full_name: '',
       email: '',
-      phone_number: '',
+      phone: '',
       password: '',
       vehicle_type_id: '',
     });
@@ -519,10 +523,9 @@ export default function FleetPage() {
   const handleEditDriver = (driver: FleetDriver) => {
     setEditingDriver(driver);
     setDriverForm({
-      first_name: driver.user_profile.first_name,
-      last_name: driver.user_profile.last_name,
+      full_name: driver.user_profile.full_name,
       email: '', // Email not available in user_profiles, stored in auth.users
-      phone_number: driver.user_profile.phone_number,
+      phone: driver.user_profile.phone,
       password: '', // Don't populate password
       vehicle_type_id: driver.vehicle_type_id,
     });
@@ -541,9 +544,8 @@ export default function FleetPage() {
       const { error: userError } = await supabase
         .from('user_profiles')
         .update({
-          first_name: driverForm.first_name,
-          last_name: driverForm.last_name,
-          phone_number: driverForm.phone_number,
+          full_name: driverForm.full_name,
+          phone: driverForm.phone,
           updated_at: new Date().toISOString(),
         })
         .eq('id', editingDriver.id);
@@ -991,7 +993,7 @@ export default function FleetPage() {
                             <SelectTrigger className="w-[200px]">
                               <SelectValue>
                                 {vehicle.assigned_driver?.user_profile 
-                                  ? `${vehicle.assigned_driver.user_profile.first_name} ${vehicle.assigned_driver.user_profile.last_name}`
+                                  ? vehicle.assigned_driver.user_profile.full_name
                                   : 'No driver assigned'}
                               </SelectValue>
                             </SelectTrigger>
@@ -999,7 +1001,7 @@ export default function FleetPage() {
                               <SelectItem value="none">No driver</SelectItem>
                               {drivers.map((driver) => (
                                 <SelectItem key={driver.id} value={driver.id}>
-                                  {driver.user_profile.first_name} {driver.user_profile.last_name}
+                                  {driver.user_profile.full_name}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -1033,23 +1035,13 @@ export default function FleetPage() {
                       </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>First Name *</Label>
-                          <Input
-                            value={driverForm.first_name}
-                            onChange={(e) => setDriverForm({ ...driverForm, first_name: e.target.value })}
-                            placeholder="John"
-                          />
-                        </div>
-                        <div>
-                          <Label>Last Name *</Label>
-                          <Input
-                            value={driverForm.last_name}
-                            onChange={(e) => setDriverForm({ ...driverForm, last_name: e.target.value })}
-                            placeholder="Doe"
-                          />
-                        </div>
+                      <div>
+                        <Label>Full Name *</Label>
+                        <Input
+                          value={driverForm.full_name}
+                          onChange={(e) => setDriverForm({ ...driverForm, full_name: e.target.value })}
+                          placeholder="John Doe"
+                        />
                       </div>
                       <div>
                         <Label>Email *</Label>
@@ -1064,8 +1056,8 @@ export default function FleetPage() {
                         <Label>Phone Number *</Label>
                         <Input
                           type="tel"
-                          value={driverForm.phone_number}
-                          onChange={(e) => setDriverForm({ ...driverForm, phone_number: e.target.value })}
+                          value={driverForm.phone}
+                          onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })}
                           placeholder="+63 912 345 6789"
                         />
                       </div>
@@ -1121,23 +1113,13 @@ export default function FleetPage() {
                       </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>First Name *</Label>
-                          <Input
-                            value={driverForm.first_name}
-                            onChange={(e) => setDriverForm({ ...driverForm, first_name: e.target.value })}
-                            placeholder="John"
-                          />
-                        </div>
-                        <div>
-                          <Label>Last Name *</Label>
-                          <Input
-                            value={driverForm.last_name}
-                            onChange={(e) => setDriverForm({ ...driverForm, last_name: e.target.value })}
-                            placeholder="Doe"
-                          />
-                        </div>
+                      <div>
+                        <Label>Full Name *</Label>
+                        <Input
+                          value={driverForm.full_name}
+                          onChange={(e) => setDriverForm({ ...driverForm, full_name: e.target.value })}
+                          placeholder="John Doe"
+                        />
                       </div>
                       <div>
                         <Label>Email</Label>
@@ -1155,8 +1137,8 @@ export default function FleetPage() {
                         <Label>Phone Number *</Label>
                         <Input
                           type="tel"
-                          value={driverForm.phone_number}
-                          onChange={(e) => setDriverForm({ ...driverForm, phone_number: e.target.value })}
+                          value={driverForm.phone}
+                          onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })}
                           placeholder="+63 912 345 6789"
                         />
                       </div>
@@ -1235,12 +1217,12 @@ export default function FleetPage() {
                           <div>
                             <div className="flex items-center gap-2">
                               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                                {driver.user_profile?.first_name || 'Unknown'} {driver.user_profile?.last_name || 'Driver'}
+                                {driver.user_profile?.full_name || 'Unknown Driver'}
                               </h3>
                               {getStatusBadge(driver.current_status)}
                             </div>
                             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                              {driver.user_profile?.phone_number || 'No phone'}
+                              {driver.user_profile?.phone || 'No phone'}
                             </p>
                             <div className="flex items-center gap-4 mt-2">
                               <div className="text-xs">

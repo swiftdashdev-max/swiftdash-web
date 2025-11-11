@@ -168,7 +168,12 @@ export default function FleetMap({ drivers = [], isLoading }: FleetMapProps) {
         map.setCenter(bounds.getCenter());
         map.setZoom(15);
       } else {
-        map.fitBounds(bounds, { padding: { top: 50, bottom: 50, left: 50, right: 50 } });
+        map.fitBounds(bounds, { 
+          left: 50,
+          top: 50,
+          right: 50,
+          bottom: 50
+        });
       }
     }
   }, [map, safeDrivers, markers]);

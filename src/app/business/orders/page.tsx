@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { bookDelivery, createMultiStopDelivery } from '@/lib/supabase/edge-functions';
 import { useVehicleTypes } from '@/hooks/use-vehicle-types';
+import { useDeliveryPerformance, useNetworkOptimization } from '@/hooks/use-delivery-performance';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -32,7 +33,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { DeliveryMap } from '@/components/delivery-map';
-import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
+import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete-optimized';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
 import {
   Package,
@@ -96,6 +97,8 @@ interface OrderItem {
 
 export default function OrdersPage() {
   const router = useRouter();
+  const supabase = createClient();
+  const [businessId, setBusinessId] = useState<string | null>(null);
   const [deliveryType, setDeliveryType] = useState<'single' | 'multi'>('single');
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledTime, setScheduledTime] = useState<string>('');
@@ -131,9 +134,6 @@ export default function OrdersPage() {
   const [tipAmount, setTipAmount] = useState<number>(0);
   const [discountAmount, setDiscountAmount] = useState<number>(0);
   
-  // Supabase client
-  const supabase = createClient();
-  
   // Submission state
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
@@ -142,19 +142,64 @@ export default function OrdersPage() {
   // Use cached vehicle types hook
   const { vehicleTypes, loading: loadingVehicles, error: vehicleError } = useVehicleTypes();
   
+  // Initialize performance optimizations
+  const { clearCaches, getCacheStats, logPerformance } = useDeliveryPerformance({
+    preloadCommonRoutes: true,
+    enablePerformanceLogging: process.env.NODE_ENV === 'development',
+  });
+  
+  // Network optimization
+  const { getOptimizedSettings, isSlowConnection } = useNetworkOptimization();
+  
+  // Get optimized settings based on network
+  const optimizedSettings = useMemo(() => getOptimizedSettings(), [getOptimizedSettings]);
+  
+  // Initialize user and business data
+  useEffect(() => {
+    const initializeUser = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          router.push('/business/login');
+          return;
+        }
+
+        // Get user's business_id from user_profiles
+        const { data: userProfile } = await supabase
+          .from('user_profiles')
+          .select('business_id')
+          .eq('id', user.id)
+          .single();
+
+        if (userProfile?.business_id) {
+          setBusinessId(userProfile.business_id);
+        }
+      } catch (error) {
+        console.error('Error initializing user:', error);
+      }
+    };
+
+    initializeUser();
+  }, [router]);
+  
   // Fleet vehicles state
   const [fleetVehicles, setFleetVehicles] = useState<any[]>([]);
   const [loadingFleet, setLoadingFleet] = useState(false);
   const [fleetError, setFleetError] = useState<string | null>(null);
 
-  // Fetch fleet vehicles when toggle is enabled
+  // Fetch fleet vehicles when toggle is enabled and business_id is available
   useEffect(() => {
-    if (useFleetVehicles) {
+    if (useFleetVehicles && businessId) {
       fetchFleetVehicles();
     }
-  }, [useFleetVehicles]);
+  }, [useFleetVehicles, businessId]);
 
   const fetchFleetVehicles = async () => {
+    if (!businessId) {
+      setFleetError('Business ID not available');
+      return;
+    }
+    
     try {
       setLoadingFleet(true);
       setFleetError(null);
@@ -166,11 +211,11 @@ export default function OrdersPage() {
           assigned_driver:driver_profiles(
             id, 
             is_online,
-            user_profiles!inner(first_name, last_name, phone_number)
+            user_profiles!inner(full_name, phone)
           ),
           vehicle_type:vehicle_types(name, icon_emoji)
         `)
-        .eq('status', 'active');
+        .eq('business_id', businessId);
 
       if (error) throw error;
       setFleetVehicles(data || []);
@@ -349,7 +394,7 @@ export default function OrdersPage() {
       const edgeFunctionPayload = {
         vehicleTypeId: useFleetVehicles ? undefined : selectedVehicle,
         fleetVehicleId: useFleetVehicles ? selectedFleetVehicle : undefined,
-        assignmentType: useFleetVehicles ? 'manual' : 'auto',
+        assignmentType: useFleetVehicles ? ('manual' as const) : ('auto' as const),
         pickup: {
           address: pickupLocation.address,
           location: { lat: pickupLocation.lat!, lng: pickupLocation.lng! },
@@ -387,7 +432,7 @@ export default function OrdersPage() {
         const multiStopPayload = {
           vehicleTypeId: useFleetVehicles ? undefined : selectedVehicle,
           fleetVehicleId: useFleetVehicles ? selectedFleetVehicle : undefined,
-          assignmentType: useFleetVehicles ? 'manual' : 'auto',
+          assignmentType: useFleetVehicles ? ('manual' as const) : ('auto' as const),
           pickup: {
             address: pickupLocation.address,
             location: { lat: pickupLocation.lat!, lng: pickupLocation.lng! },
@@ -600,7 +645,7 @@ export default function OrdersPage() {
                                     {vehicle.vehicle_type?.name} - {vehicle.license_plate}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
-                                    {vehicle.assigned_driver?.user_profiles ? `${vehicle.assigned_driver.user_profiles.first_name} ${vehicle.assigned_driver.user_profiles.last_name}` : 'Unassigned'} • {vehicle.assigned_driver?.is_online ? 'Online' : 'Offline'}
+                                    {vehicle.assigned_driver?.user_profiles ? vehicle.assigned_driver.user_profiles.full_name : 'Unassigned'} • {vehicle.assigned_driver?.is_online ? 'Online' : 'Offline'}
                                   </div>
                                 </div>
                               </div>
@@ -1265,9 +1310,9 @@ export default function OrdersPage() {
 
       {/* Map Container - Dominant Right Side */}
       <div className="flex-1 relative">
-        {/* Memoize DeliveryMap to prevent re-renders on form input changes */}
+        {/* Optimized DeliveryMap with performance settings */}
         <DeliveryMap 
-          key={`${demoPickup?.lat},${demoPickup?.lng}-${demoDropoffs.map(d => `${d.lat},${d.lng}`).join('-')}`}
+          key={`${demoPickup?.lat},${demoPickup?.lng}-${demoDropoffs.map(d => `${d.lat},${d.lng}`).join('-')}-${optimizedSettings.mapQuality}`}
           pickup={demoPickup}
           dropoffs={demoDropoffs}
           className="absolute inset-0"
@@ -1287,6 +1332,13 @@ export default function OrdersPage() {
               <span className="text-xs font-medium">Dropoff</span>
             </div>
           </div>
+          {/* Performance indicator for slow connections */}
+          {isSlowConnection() && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
+              <span>Optimizing for slow connection</span>
+            </div>
+          )}
         </div>
 
         {/* Quick Stats Overlay */}
