@@ -15,6 +15,14 @@ interface AssignDriverRequest {
   driver_id: string
   assigned_by: string // user_id of dispatcher
   assignment_type?: 'manual' | 'auto'
+  // Enhanced fields for fleet/marketplace assignment
+  vehicle_type_id?: string
+  fleet_vehicle_id?: string | null
+  driver_source: 'fleet' | 'marketplace'
+  payment_by?: 'sender' | 'recipient' | null
+  payment_method?: 'cash' | 'credit_card' | 'maya_wallet' | 'qr_ph' | null
+  total_price?: number
+  delivery_fee?: number
 }
 
 interface AssignDriverResponse {
@@ -25,6 +33,7 @@ interface AssignDriverResponse {
     driver_id: string
     status: string
     assigned_at: string
+    driver_source: string
   }
   error?: string
 }
@@ -53,15 +62,36 @@ serve(async (req) => {
       delivery_id, 
       driver_id, 
       assigned_by,
-      assignment_type = 'manual'
+      assignment_type = 'manual',
+      vehicle_type_id,
+      fleet_vehicle_id,
+      driver_source,
+      payment_by,
+      payment_method,
+      total_price,
+      delivery_fee
     }: AssignDriverRequest = await req.json()
 
     // Validation
-    if (!delivery_id || !driver_id || !assigned_by) {
+    if (!delivery_id || !driver_id || !assigned_by || !driver_source) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'Missing required fields: delivery_id, driver_id, assigned_by'
+          error: 'Missing required fields: delivery_id, driver_id, assigned_by, driver_source'
+        } as AssignDriverResponse),
+        { 
+          status: 400, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        }
+      )
+    }
+
+    // Validate driver_source
+    if (driver_source !== 'fleet' && driver_source !== 'marketplace') {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'driver_source must be either "fleet" or "marketplace"'
         } as AssignDriverResponse),
         { 
           status: 400, 
@@ -93,13 +123,14 @@ serve(async (req) => {
       )
     }
 
-    // Check if driver is online
-    if (driver.current_status !== 'online') {
-      console.warn(`[assign-business-driver] Driver ${driver_id} is ${driver.current_status}, not online`)
+    // Check if driver is available (online or busy)
+    const availableStatuses = ['online', 'busy'];
+    if (!availableStatuses.includes(driver.current_status)) {
+      console.warn(`[assign-business-driver] Driver ${driver_id} is ${driver.current_status}, not available`)
       return new Response(
         JSON.stringify({
           success: false,
-          error: `Driver is currently ${driver.current_status}. Please select an online driver.`
+          error: `Driver is currently ${driver.current_status}. Please select an available driver.`
         } as AssignDriverResponse),
         { 
           status: 400, 
@@ -144,20 +175,60 @@ serve(async (req) => {
       )
     }
 
-    // Step 3: Begin atomic transaction - Update delivery
+    // Step 3: Prepare delivery update data
     const assignedAt = new Date().toISOString()
     
+    // Determine payment_status based on driver_source
+    // Fleet: null (no payment needed), Marketplace: 'pending' (payment required)
+    const payment_status = driver_source === 'fleet' ? null : 'pending'
+    
+    // Build update object
+    const deliveryUpdate: any = {
+      driver_id: driver_id,
+      status: 'driver_assigned',
+      driver_source: 'business_dispatch',
+      assignment_type: assignment_type,
+      assigned_by: assigned_by,
+      assigned_at: assignedAt,
+      updated_at: assignedAt,
+      payment_status: payment_status,
+    }
+
+    // Add vehicle_type_id if provided
+    if (vehicle_type_id) {
+      deliveryUpdate.vehicle_type_id = vehicle_type_id
+    }
+
+    // Add fleet_vehicle_id if provided (fleet assignment)
+    if (fleet_vehicle_id) {
+      deliveryUpdate.fleet_vehicle_id = fleet_vehicle_id
+    }
+
+    // Add pricing fields if provided
+    if (total_price !== undefined) {
+      deliveryUpdate.total_price = total_price
+      deliveryUpdate.total_amount = total_price
+    }
+    if (delivery_fee !== undefined) {
+      deliveryUpdate.delivery_fee = delivery_fee
+    }
+
+    // Add payment fields for marketplace drivers
+    if (driver_source === 'marketplace') {
+      if (payment_by) deliveryUpdate.payment_by = payment_by
+      if (payment_method) deliveryUpdate.payment_method = payment_method
+    } else {
+      // Fleet drivers - clear payment fields
+      deliveryUpdate.payment_by = null
+      deliveryUpdate.payment_method = null
+    }
+
+    console.log('[assign-business-driver] Updating delivery with:', deliveryUpdate)
+
+    // Step 4: Update delivery in database
     const { data: updatedDelivery, error: updateDeliveryError } = await supabaseAdmin
       .from('deliveries')
-      .update({
-        driver_id: driver_id,
-        status: 'driver_assigned',
-        driver_source: 'business_dispatch',
-        assignment_type: assignment_type,
-        assigned_by: assigned_by,
-        assigned_at: assignedAt,
-        updated_at: assignedAt
-      })
+      .update(deliveryUpdate)
       .eq('id', delivery_id)
       .select()
       .single()
@@ -178,12 +249,11 @@ serve(async (req) => {
 
     console.log(`[assign-business-driver] Delivery ${delivery_id} updated successfully`)
 
-    // Step 4: Update driver status to busy
+    // Step 5: Update driver status to busy
     const { error: updateDriverError } = await supabaseAdmin
       .from('driver_profiles')
       .update({
         current_status: 'busy',
-        current_delivery_id: delivery_id,
         updated_at: assignedAt
       })
       .eq('id', driver_id)
@@ -216,14 +286,35 @@ serve(async (req) => {
 
     console.log(`[assign-business-driver] Driver ${driver_id} status updated to busy`)
 
-    // Step 5: Get driver's FCM token for push notification
+    // Step 6: Update fleet vehicle status if fleet assignment
+    if (driver_source === 'fleet' && fleet_vehicle_id) {
+      console.log(`[assign-business-driver] Updating fleet vehicle ${fleet_vehicle_id} status to busy`)
+      
+      const { error: updateVehicleError } = await supabaseAdmin
+        .from('business_fleet')
+        .update({
+          current_status: 'busy',
+          updated_at: assignedAt
+        })
+        .eq('id', fleet_vehicle_id)
+
+      if (updateVehicleError) {
+        console.error('[assign-business-driver] Failed to update fleet vehicle status:', updateVehicleError)
+        // Don't rollback the entire assignment, just log the error
+        // The delivery is still assigned, vehicle status will be corrected later
+      } else {
+        console.log(`[assign-business-driver] Fleet vehicle ${fleet_vehicle_id} status updated to busy`)
+      }
+    }
+
+    // Step 7: Get driver's FCM token for push notification
     const { data: driverProfile } = await supabaseAdmin
       .from('driver_profiles')
       .select('fcm_token')
       .eq('id', driver_id)
       .single()
 
-    // Step 6: Send push notification (if FCM token exists)
+    // Step 8: Send push notification (if FCM token exists)
     if (driverProfile?.fcm_token) {
       try {
         console.log(`[assign-business-driver] Sending FCM notification to driver ${driver_id}`)
@@ -273,12 +364,14 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        message: 'Driver assigned successfully',
+        message: `Driver assigned successfully (${driver_source})`,
         data: {
           delivery_id: delivery_id,
           driver_id: driver_id,
           status: 'driver_assigned',
-          assigned_at: assignedAt
+          assigned_at: assignedAt,
+          driver_source: driver_source,
+          payment_status: payment_status
         }
       } as AssignDriverResponse),
       { 

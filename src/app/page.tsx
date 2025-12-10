@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, ChevronRight, Feather, Zap, Map, Clock, Briefcase, Globe, Mail } from 'lucide-react';
+import { ArrowRight, ChevronRight, Feather, Zap, Map, Clock, Briefcase, Globe, Mail, CheckCircle2 } from 'lucide-react';
 import { Reveal, SlideIn, ScaleIn } from '@/components/animations';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { HoleBackground } from '@/components/animate-ui/components/backgrounds/hole';
@@ -57,6 +57,9 @@ export default function Home() {
             <Link href="#map" className="text-muted-foreground hover:text-foreground transition-colors">
               Coverage
             </Link>
+            <Link href="/pricing" className="text-muted-foreground hover:text-foreground transition-colors">
+              Pricing
+            </Link>
             <Link href="#contact" className="text-muted-foreground hover:text-foreground transition-colors">
               Contact
             </Link>
@@ -95,6 +98,9 @@ export default function Home() {
               </Link>
               <Link href="#map" className="text-muted-foreground hover:text-foreground transition-colors py-2" onClick={() => setIsMenuOpen(false)}>
                 Coverage
+              </Link>
+              <Link href="/pricing" className="text-muted-foreground hover:text-foreground transition-colors py-2" onClick={() => setIsMenuOpen(false)}>
+                Pricing
               </Link>
               <Link href="#contact" className="text-muted-foreground hover:text-foreground transition-colors py-2" onClick={() => setIsMenuOpen(false)}>
                 Contact
@@ -162,49 +168,62 @@ export default function Home() {
           </div>
         </section>
 
-        {/* App Mockup Section */}
-        <section id="mockups" className="py-24 sm:py-32 bg-gradient-to-b from-background to-secondary/20">
-            <div className="container mx-auto px-6">
-                <div className="text-center mb-16">
+        {/* How It Works Section */}
+        <section className="py-24 bg-background relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/5 via-background to-background" />
+            <div className="container mx-auto px-6 relative z-10">
+                <div className="text-center mb-20">
                     <Reveal>
-                        <h2 className="text-4xl md:text-5xl font-bold tracking-tighter text-foreground">
-                            Experience SwiftDash
+                        <h2 className="text-4xl md:text-5xl font-bold tracking-tighter mb-6">
+                            Delivery made <span className="text-primary">simple</span>
                         </h2>
                     </Reveal>
-                    <Reveal delay={0.3}>
-                        <p className="mt-4 text-lg text-muted-foreground">
-                            Seamless delivery management at your fingertips
+                    <Reveal delay={0.2}>
+                        <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
+                            From booking to drop-off, we've streamlined every step of the process.
                         </p>
                     </Reveal>
                 </div>
-                <div className="flex justify-center items-center gap-6 lg:gap-8 max-w-5xl mx-auto">
-                    {/* Left - Home Screen */}
-                    <ScaleIn delay={0.2}>
-                        <div className="relative w-[780px] lg:w-[750px]">
-                            <Image 
-                                src="/assets/images/app-home.png" 
-                                alt="SwiftDash Home Screen - Track Live, Quick Actions including Request Delivery, Track Order, My Addresses, and Order History" 
-                                width={1000}
-                                height={2000}
-                                className="w-full h-auto drop-shadow-2xl"
-                                priority
-                            />
-                        </div>
-                    </ScaleIn>
 
-                    {/* Right - Tracking Screen */}
-                    <ScaleIn delay={0.4}>
-                        <div className="relative w-[780px] lg:w-[750px]">
-                            <Image 
-                                src="/assets/images/app-order.png" 
-                                alt="SwiftDash Order Summary - Detailed view of Light Truck delivery with pickup/delivery locations and price breakdown (₱806.40)" 
-                                width={1000}
-                                height={2000}
-                                className="w-full h-auto drop-shadow-2xl"
-                                priority
-                            />
-                        </div>
-                    </ScaleIn>
+                <div className="grid md:grid-cols-3 gap-12 relative">
+                    {/* Connecting Line (Desktop) */}
+                    <div className="hidden md:block absolute top-12 left-[16%] right-[16%] h-0.5 bg-gradient-to-r from-transparent via-border to-transparent border-t-2 border-dashed border-muted-foreground/30" />
+
+                    {[
+                        {
+                            step: "01",
+                            title: "Book Instantly",
+                            desc: "Enter your pickup and drop-off locations. Choose your vehicle type and schedule.",
+                            icon: <Map className="w-8 h-8 text-primary" />
+                        },
+                        {
+                            step: "02",
+                            title: "Smart Matching",
+                            desc: "Our AI instantly connects you with the nearest available driver for fastest pickup.",
+                            icon: <Zap className="w-8 h-8 text-primary" />
+                        },
+                        {
+                            step: "03",
+                            title: "Track & Relax",
+                            desc: "Monitor your package in real-time and get notified when it arrives safely.",
+                            icon: <CheckCircle2 className="w-8 h-8 text-primary" />
+                        }
+                    ].map((item, i) => (
+                        <SlideIn key={i} delay={i * 0.2} direction="up">
+                            <div className="relative flex flex-col items-center text-center group">
+                                <div className="w-24 h-24 rounded-3xl bg-background border-2 border-border shadow-lg flex items-center justify-center mb-8 relative z-10 group-hover:border-primary/50 group-hover:shadow-primary/20 transition-all duration-500">
+                                    <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm">
+                                        {item.step}
+                                    </div>
+                                    {item.icon}
+                                </div>
+                                <h3 className="text-2xl font-bold mb-4">{item.title}</h3>
+                                <p className="text-muted-foreground leading-relaxed">
+                                    {item.desc}
+                                </p>
+                            </div>
+                        </SlideIn>
+                    ))}
                 </div>
             </div>
         </section>
@@ -271,28 +290,6 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Service Coverage Map Section */}
-        <section id="map" className="py-24 sm:py-32">
-            <div className="container mx-auto px-6">
-                <div className="text-center max-w-3xl mx-auto">
-                    <Reveal>
-                        <h2 className="text-4xl md:text-5xl font-bold tracking-tighter text-foreground">
-                        Serving You Nationwide
-                        </h2>
-                    </Reveal>
-                    <Reveal delay={0.3}>
-                        <p className="mt-4 text-lg text-muted-foreground">
-                        Our network is rapidly expanding. Check out our service coverage across the Philippines.
-                        </p>
-                    </Reveal>
-                </div>
-                <div className="mt-16 relative h-96 lg:h-[600px] rounded-2xl bg-secondary/50 flex items-center justify-center">
-                    <p className="text-muted-foreground">Service Coverage Map Placeholder</p>
-                    <Globe className="h-32 w-32 text-primary/20 absolute" />
-                </div>
-            </div>
-        </section>
-
         {/* About and Contact Section */}
         <section id="contact" className="py-24 sm:py-32 bg-secondary/50">
           <div className="container mx-auto px-6">
@@ -352,6 +349,7 @@ export default function Home() {
               <ul className="space-y-3">
                 <li><Link href="#features" className="text-muted-foreground hover:text-foreground transition-colors text-sm">Features</Link></li>
                 <li><Link href="#map" className="text-muted-foreground hover:text-foreground transition-colors text-sm">Coverage</Link></li>
+                <li><Link href="/pricing" className="text-muted-foreground hover:text-foreground transition-colors text-sm">Pricing</Link></li>
                 <li><Link href="/business/signup" className="text-muted-foreground hover:text-foreground transition-colors text-sm">For Business</Link></li>
                 <li><Link href="/driver-login" className="text-muted-foreground hover:text-foreground transition-colors text-sm">Driver Portal</Link></li>
               </ul>

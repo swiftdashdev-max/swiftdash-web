@@ -51,10 +51,22 @@ export async function middleware(request: NextRequest) {
           })
         },
       },
+      auth: {
+        flowType: 'pkce',
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        persistSession: false,
+      },
     }
   )
 
-  await supabase.auth.getUser()
+  // Silently check for user without throwing errors
+  try {
+    await supabase.auth.getUser()
+  } catch (error) {
+    // Ignore errors in middleware
+    console.error('Auth check error in middleware:', error)
+  }
 
   return response
 }

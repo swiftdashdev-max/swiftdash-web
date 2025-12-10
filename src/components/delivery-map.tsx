@@ -90,9 +90,11 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     ];
   }, [pickup?.lng, pickup?.lat, dropoffs.map(d => `${d.lng},${d.lat}`).join('|')]);
 
-  // Initialize map with optimized settings
+  // Initialize map once and keep it persistent (Option A - Performance Optimization)
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
+
+    console.log('🗺️ Initializing map (first load only)...');
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
@@ -103,12 +105,22 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       bearing: 0,
       // Performance optimizations
       antialias: true, // Enable antialiasing for crisp rendering
+      preserveDrawingBuffer: true, // Helps with screenshots/exports
+      trackResize: true, // Auto-handle container resize
+      // Enable aggressive caching for map tiles
+      transformRequest: (url, resourceType) => {
+        if (resourceType === 'Tile' || resourceType === 'Source') {
+          return {
+            url: url,
+            headers: {},
+            credentials: 'same-origin'
+          };
+        }
+      },
     });
 
-    console.log('🗺️ Map initialized with performance optimizations');
-
     map.current.on('load', () => {
-      console.log('✅ Map loaded successfully');
+      console.log('✅ Map loaded successfully (cached for subsequent renders)');
       setIsMapReady(true);
     });
 
@@ -141,14 +153,16 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       'top-right'
     );
 
+    // Cleanup only on unmount (keep map persistent during component lifecycle)
     return () => {
+      console.log('🗺️ Cleaning up map instance');
       if (map.current) {
         map.current.remove();
         map.current = null;
       }
       setIsMapReady(false);
     };
-  }, []);
+  }, []); // Empty deps - only initialize once
 
   // Handle window resize to adjust map
   useEffect(() => {
@@ -203,7 +217,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       map.current.flyTo({
         center: [pickup.lng, pickup.lat],
         zoom: 14,
-        duration: 1000, // Reduced duration for faster navigation
+        duration: 800, // Fast animation for better UX
+        essential: true, // This animation is considered essential
       });
     }
   }, [pickup, dropoffs.length]);
@@ -255,7 +270,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
 
       map.current.fitBounds(bounds, {
         padding: { top: 80, bottom: 80, left: 80, right: 80 },
-        duration: 1000, // Reduced duration for faster navigation
+        duration: 800, // Fast animation
+        essential: true,
       });
       console.log('✅ Map bounds adjusted to show all markers');
     }
@@ -322,67 +338,157 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       }
 
       // Add route to map
-      if (map.current && map.current.isStyleLoaded()) {
-        // Add or update route source
-        if (!map.current.getSource('route')) {
-          map.current.addSource('route', {
-            type: 'geojson',
-            data: {
-              type: 'Feature',
-              properties: {},
-              geometry: geometry,
-            },
-            lineMetrics: true,
-          });
+      if (map.current) {
+        console.log('🗺️ Attempting to add route to map', {
+          isStyleLoaded: map.current.isStyleLoaded(),
+          hasSource: !!map.current.getSource('route'),
+          geometryType: geometry?.type,
+          coordinatesCount: geometry?.coordinates?.length
+        });
 
-          // Add route line layer
-          map.current.addLayer({
-            id: 'route',
-            type: 'line',
-            source: 'route',
-            layout: {
-              'line-join': 'round',
-              'line-cap': 'round',
-            },
-            paint: {
-              'line-color': '#00d9ff',
-              'line-width': 8,
-              'line-opacity': 0.9,
-            },
-          });
+        // Wait for style to be ready
+        const addOrUpdateRoute = () => {
+          if (!map.current) return;
+          
+          try {
+            // Add or update route source
+            if (!map.current.getSource('route')) {
+              console.log('➕ Adding new route source and layers');
+              
+              map.current.addSource('route', {
+                type: 'geojson',
+                data: {
+                  type: 'Feature',
+                  properties: {},
+                  geometry: geometry,
+                },
+                lineMetrics: true,
+              });
 
-          // Add directional arrows
-          map.current.addLayer({
-            id: 'route-arrows',
-            type: 'symbol',
-            source: 'route',
-            layout: {
-              'symbol-placement': 'line',
-              'symbol-spacing': 80,
-              'text-field': '▶',
-              'text-size': 16,
-              'text-keep-upright': false,
-              'text-rotation-alignment': 'map',
-            },
-            paint: {
-              'text-color': '#ffffff',
-              'text-halo-color': '#00d9ff',
-              'text-halo-width': 3,
-            },
-          });
+              // Add route line layer with animated drawing effect
+              map.current.addLayer({
+                id: 'route',
+                type: 'line',
+                source: 'route',
+                layout: {
+                  'line-join': 'round',
+                  'line-cap': 'round',
+                },
+                paint: {
+                  'line-color': '#00d9ff',
+                  'line-width': 8,
+                  'line-opacity': 0.9,
+                  'line-emissive-strength': 1.0, // Makes line visible on dark map styles
+                  'line-trim-offset': [0, 0], // Start with nothing visible, will grow from pickup
+                },
+              });
 
-          console.log('✅ Route layers added to map');
-        } else {
-          // Update existing route
-          const source = map.current.getSource('route') as mapboxgl.GeoJSONSource;
-          if (source) {
-            source.setData({
-              type: 'Feature',
-              properties: {},
-              geometry: geometry,
-            });
-            console.log('✅ Route updated on map');
+              // Animate the route drawing from start to finish
+              console.log('🎬 Animating route drawing...');
+              let progress = 0;
+              const duration = 1500; // 1.5 seconds animation
+              const startTime = performance.now();
+
+              const animate = (currentTime: number) => {
+                if (!map.current) return;
+
+                const elapsed = currentTime - startTime;
+                progress = Math.min(elapsed / duration, 1);
+
+                // Grow line from pickup (0) toward dropoff (progress)
+                // [0, progress] means show from start (pickup) to current progress point
+                map.current.setPaintProperty('route', 'line-trim-offset', [0, 1 - progress]);
+
+                if (progress < 1) {
+                  requestAnimationFrame(animate);
+                } else {
+                  console.log('✅ Route animation complete');
+                  // Ensure final state shows full route
+                  if (map.current) {
+                    map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
+                  }
+                }
+              };
+
+              requestAnimationFrame(animate);
+
+              // Add directional arrows
+              map.current.addLayer({
+                id: 'route-arrows',
+                type: 'symbol',
+                source: 'route',
+                layout: {
+                  'symbol-placement': 'line',
+                  'symbol-spacing': 80,
+                  'text-field': '▶',
+                  'text-size': 16,
+                  'text-keep-upright': false,
+                  'text-rotation-alignment': 'map',
+                },
+                paint: {
+                  'text-color': '#ffffff',
+                  'text-halo-color': '#00d9ff',
+                  'text-halo-width': 3,
+                },
+              });
+
+              console.log('✅ Route layers added to map');
+            } else {
+              // Update existing route with animation
+              console.log('🔄 Updating existing route with animation');
+              const source = map.current.getSource('route') as mapboxgl.GeoJSONSource;
+              if (source) {
+                source.setData({
+                  type: 'Feature',
+                  properties: {},
+                  geometry: geometry,
+                });
+
+                // Reset and animate the updated route
+                console.log('🎬 Re-animating route drawing...');
+                let progress = 0;
+                const duration = 1500; // 1.5 seconds animation
+                const startTime = performance.now();
+
+                const animate = (currentTime: number) => {
+                  if (!map.current) return;
+
+                  const elapsed = currentTime - startTime;
+                  progress = Math.min(elapsed / duration, 1);
+
+                  // Grow line from pickup (0) toward dropoff (progress)
+                  // [0, 1-progress] trims the end, showing more as progress increases
+                  map.current.setPaintProperty('route', 'line-trim-offset', [0, 1 - progress]);
+
+                  if (progress < 1) {
+                    requestAnimationFrame(animate);
+                  } else {
+                    console.log('✅ Route animation complete');
+                    // Ensure final state shows full route
+                    if (map.current) {
+                      map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
+                    }
+                  }
+                };
+
+                requestAnimationFrame(animate);
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error adding/updating route:', error);
           }
+        };
+
+        // If style is already loaded, add route immediately
+        if (map.current.isStyleLoaded()) {
+          addOrUpdateRoute();
+        } else {
+          // Otherwise wait for style to load
+          console.log('⏳ Waiting for style to load...');
+          map.current.once('styledata', () => {
+            console.log('✅ Style loaded, adding route');
+            addOrUpdateRoute();
+          });
         }
       }
 
@@ -416,7 +522,18 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
   }, [coordinates, isMapReady, fetchOptimizedRoute]);
 
   return (
-    <div ref={mapContainer} className={`w-full h-full ${className}`} />
+    <div className={`relative w-full h-full ${className}`}>
+      {/* Show subtle loading indicator only on first load */}
+      {!isMapReady && (
+        <div className="absolute inset-0 flex items-center justify-center bg-muted/10 backdrop-blur-sm z-10">
+          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+            <div className="h-8 w-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+            <p className="text-sm font-medium">Loading map...</p>
+          </div>
+        </div>
+      )}
+      <div ref={mapContainer} className="w-full h-full" />
+    </div>
   );
 };
 

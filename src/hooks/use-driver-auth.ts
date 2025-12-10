@@ -77,9 +77,11 @@ export function useDriverAuth() {
   };
 
   const clearDriverSession = () => {
-    sessionStorage.removeItem('driver_user');
-    // Also clear any localStorage remnants
-    localStorage.removeItem('driver_user');
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('driver_user');
+      // Also clear any localStorage remnants
+      localStorage.removeItem('driver_user');
+    }
   };
 
   const login = async (email: string, password: string) => {

@@ -1,12 +1,35 @@
 'use client';
 
 import Ably from 'ably';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 
 // Ably client key from environment variable
 // TODO: Get this key from driver team - should be same key they use
 // Channel strategy: business uses 'tracking:{deliveryId}', customer uses 'delivery:{deliveryId}'
 const ABLY_CLIENT_KEY = process.env.NEXT_PUBLIC_ABLY_CLIENT_KEY || '';
+
+/**
+ * Custom debounce function for location updates
+ * Prevents excessive React re-renders from frequent Ably messages
+ */
+function debounce<T extends (...args: any[]) => void>(
+  func: T,
+  wait: number
+): (...args: Parameters<T>) => void {
+  let timeout: NodeJS.Timeout | null = null;
+
+  return function executedFunction(...args: Parameters<T>) {
+    const later = () => {
+      timeout = null;
+      func(...args);
+    };
+
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    timeout = setTimeout(later, wait);
+  };
+}
 
 // Singleton Ably client instance
 let ablyClientInstance: Ably.Realtime | null = null;
@@ -134,6 +157,9 @@ export function useDriverLocation(deliveryId: string | null) {
       setLocation(locationData);
     };
 
+    // Subscribe to both event names for compatibility
+    // Driver team uses 'location-update' but we also support 'driver_location'
+    channel.subscribe('location-update', handleLocationUpdate);
     channel.subscribe('driver_location', handleLocationUpdate);
 
     // Monitor connection state
@@ -154,6 +180,7 @@ export function useDriverLocation(deliveryId: string | null) {
 
     // Cleanup on unmount
     return () => {
+      channel.unsubscribe('location-update', handleLocationUpdate);
       channel.unsubscribe('driver_location', handleLocationUpdate);
       channel.detach();
       channelRef.current = null;
@@ -267,6 +294,11 @@ export function useStopUpdates(deliveryId: string | null) {
  * React hook: Subscribe to multiple delivery channels at once
  * Useful for tracking page where we monitor all active deliveries
  * 
+ * PERFORMANCE: Debounces location updates to prevent excessive re-renders
+ * - Driver app sends updates every 3-5 seconds
+ * - We debounce to 1.5 seconds to reduce React cycles
+ * - Marker interpolation still smooth (2-second animation)
+ * 
  * @param deliveryIds - Array of delivery IDs to track
  * @returns Map of delivery ID to latest location
  */
@@ -277,9 +309,23 @@ export function useMultipleDriverLocations(deliveryIds: string[]) {
   // Create a stable key from delivery IDs to prevent infinite loops
   const deliveryIdsKey = deliveryIds.sort().join(',');
 
+  // Debounced update function - prevents excessive re-renders
+  // 1500ms debounce means state updates max once every 1.5 seconds per delivery
+  const debouncedUpdateLocation = useMemo(
+    () => debounce((deliveryId: string, locationData: DriverLocation) => {
+      setLocations((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(deliveryId, locationData);
+        return newMap;
+      });
+    }, 1500),
+    []
+  );
+
   useEffect(() => {
     if (!deliveryIds || deliveryIds.length === 0) {
-      setLocations(new Map());
+      // Don't clear locations immediately - keep last known positions
+      // Only clear connection states
       setConnectionStates(new Map());
       return;
     }
@@ -294,34 +340,58 @@ export function useMultipleDriverLocations(deliveryIds: string[]) {
 
       const handleLocationUpdate = (message: Ably.Message) => {
         const locationData = message.data as DriverLocation;
-        setLocations((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(deliveryId, locationData);
-          return newMap;
-        });
+        // Use debounced function instead of direct setState
+        // This prevents component from re-rendering every 3-5 seconds
+        debouncedUpdateLocation(deliveryId, locationData);
       };
 
+      // Subscribe to both event names for compatibility
+      channel.subscribe('location-update', handleLocationUpdate);
       channel.subscribe('driver_location', handleLocationUpdate);
 
-      channel.on('attached', () => {
+      const handleAttached = () => {
         setConnectionStates((prev) => {
           const newMap = new Map(prev);
           newMap.set(deliveryId, true);
           return newMap;
         });
-      });
+      };
 
-      channel.on('detached', () => {
+      const handleDetached = () => {
         setConnectionStates((prev) => {
           const newMap = new Map(prev);
           newMap.set(deliveryId, false);
           return newMap;
         });
-      });
+      };
+
+      const handleFailed = () => {
+        console.warn(`⚠️ Channel failed for delivery ${deliveryId}, attempting to reattach...`);
+        // Attempt to reattach after a brief delay
+        setTimeout(() => {
+          if (channel.state === 'failed' || channel.state === 'suspended') {
+            channel.attach();
+          }
+        }, 2000);
+      };
+
+      channel.on('attached', handleAttached);
+      channel.on('detached', handleDetached);
+      channel.on('failed', handleFailed);
+      channel.on('suspended', handleFailed);
 
       unsubscribeFunctions.push(() => {
+        channel.off('attached', handleAttached);
+        channel.off('detached', handleDetached);
+        channel.off('failed', handleFailed);
+        channel.off('suspended', handleFailed);
+        channel.unsubscribe('location-update', handleLocationUpdate);
         channel.unsubscribe('driver_location', handleLocationUpdate);
-        channel.detach();
+        
+        // Only detach if not already detached/detaching
+        if (channel.state === 'attached' || channel.state === 'attaching') {
+          channel.detach();
+        }
       });
     });
 
@@ -329,7 +399,7 @@ export function useMultipleDriverLocations(deliveryIds: string[]) {
     return () => {
       unsubscribeFunctions.forEach((unsubscribe) => unsubscribe());
     };
-  }, [deliveryIdsKey]); // Use stable key instead of array reference
+  }, [deliveryIdsKey, debouncedUpdateLocation]); // Add debouncedUpdateLocation to deps
 
   return { locations, connectionStates };
 }

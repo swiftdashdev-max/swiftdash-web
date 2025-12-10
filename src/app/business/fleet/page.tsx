@@ -61,7 +61,7 @@ interface FleetDriver {
   vehicle_type_id: string;
   rating: number;
   total_deliveries: number;
-  user_profile: {
+  user_profile?: {
     full_name: string;
     phone: string;
   };
@@ -227,13 +227,21 @@ export default function FleetPage() {
       // Fetch user profile (driver_profiles.id = user_profiles.id)
       const { data: userProfile, error: profileError } = await supabase
         .from('user_profiles')
-        .select('full_name, phone')
+        .select('first_name, last_name, phone_number')
         .eq('id', driver.id)
         .single();
 
-      if (profileError) {
-        console.error(`Error fetching user profile for driver ${driver.id}:`, profileError);
-      }        // Check if assigned to a vehicle
+      if (profileError && profileError.code !== 'PGRST116') {
+        console.warn(`Could not fetch user profile for driver ${driver.id}:`, profileError);
+      }
+      
+      // Transform user profile to match expected format
+      const transformedProfile = userProfile ? {
+        full_name: `${userProfile.first_name} ${userProfile.last_name}`.trim(),
+        phone: userProfile.phone_number
+      } : null;
+      
+      // Check if assigned to a vehicle
         const { data: vehicle, error: vehicleError } = await supabase
           .from('business_fleet')
           .select('plate_number, vehicle_make, vehicle_model')
@@ -247,7 +255,7 @@ export default function FleetPage() {
 
         return {
           ...driver,
-          user_profile: userProfile,
+          user_profile: transformedProfile,
           assigned_vehicle: vehicle
         };
       }));
@@ -523,9 +531,9 @@ export default function FleetPage() {
   const handleEditDriver = (driver: FleetDriver) => {
     setEditingDriver(driver);
     setDriverForm({
-      full_name: driver.user_profile.full_name,
+      full_name: driver.user_profile?.full_name || '',
       email: '', // Email not available in user_profiles, stored in auth.users
-      phone: driver.user_profile.phone,
+      phone: driver.user_profile?.phone || '',
       password: '', // Don't populate password
       vehicle_type_id: driver.vehicle_type_id,
     });
@@ -1001,7 +1009,7 @@ export default function FleetPage() {
                               <SelectItem value="none">No driver</SelectItem>
                               {drivers.map((driver) => (
                                 <SelectItem key={driver.id} value={driver.id}>
-                                  {driver.user_profile.full_name}
+                                  {driver.user_profile?.full_name || 'Unknown Driver'}
                                 </SelectItem>
                               ))}
                             </SelectContent>

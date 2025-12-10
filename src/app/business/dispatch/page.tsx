@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -56,6 +58,9 @@ import {
   X,
   CheckCircle2,
   AlertCircle,
+  DollarSign,
+  Building2,
+  Store,
 } from 'lucide-react';
 
 interface Delivery {
@@ -90,6 +95,31 @@ interface Driver {
   phone?: string;
 }
 
+interface FleetVehicle {
+  id: string;
+  vehicle_type_id: string;
+  vehicle_model: string;
+  plate_number: string;
+  assigned_driver_id?: string;
+  driver_name?: string;
+}
+
+interface VehicleType {
+  id: string;
+  name: string;
+  base_price: number;
+  price_per_km: number;
+  max_weight_kg: number;
+  description?: string;
+}
+
+interface PricingDetails {
+  base_price: number;
+  distance_price: number;
+  total: number;
+  vehicle_type: string;
+}
+
 export default function DispatchPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -105,6 +135,20 @@ export default function DispatchPage() {
   const [assignmentMode, setAssignmentMode] = useState<'auto' | 'manual'>('auto');
   const [selectedDriver, setSelectedDriver] = useState<string>('');
   const [assigning, setAssigning] = useState(false);
+  
+  // Fleet vs Marketplace
+  const [driverSource, setDriverSource] = useState<'fleet' | 'marketplace'>('fleet');
+  const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
+  const [selectedFleetVehicle, setSelectedFleetVehicle] = useState<string>('');
+  
+  // Pricing
+  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>([]);
+  const [selectedVehicleType, setSelectedVehicleType] = useState<string>('');
+  const [pricingDetails, setPricingDetails] = useState<PricingDetails | null>(null);
+  
+  // Payment (for marketplace only)
+  const [paymentBy, setPaymentBy] = useState<'sender' | 'recipient'>('sender');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'creditCard' | 'debitCard' | 'maya'>('cash');
 
   useEffect(() => {
     if (!userLoading && businessId) {
@@ -214,15 +258,24 @@ export default function DispatchPage() {
         return;
       }
 
-      // Fetch deliveries (pending, driver_offered, driver_assigned - not yet active)
-      // Status 'pending' = awaiting driver assignment
-      // Status 'driver_offered' = driver has been offered the job
-      // Status 'driver_assigned' = driver accepted but hasn't started pickup
+      // Fetch deliveries (pending and in-progress)
+      // Include all active delivery statuses so they don't disappear when driver updates status
       const { data: deliveriesData, error: deliveriesError } = await supabase
         .from('deliveries')
         .select('*')
         .eq('business_id', businessId)
-        .in('status', ['pending', 'driver_offered', 'driver_assigned'])
+        .in('status', [
+          'pending',
+          'driver_offered',
+          'driver_assigned',
+          'going_to_pickup',
+          'arrived_at_pickup',
+          'pickup_arrived',
+          'picked_up',
+          'going_to_dropoff',
+          'arrived_at_dropoff',
+          'dropoff_arrived'
+        ])
         .order('created_at', { ascending: false });
 
       if (deliveriesError) {
@@ -284,6 +337,54 @@ export default function DispatchPage() {
         
         setDrivers(driversWithProfiles);
       }
+
+      // Fetch vehicle types for pricing
+      const { data: vehicleTypesData, error: vehicleTypesError } = await supabase
+        .from('vehicle_types')
+        .select('id, name, base_price, price_per_km, max_weight_kg, description')
+        .order('base_price', { ascending: true });
+
+      if (vehicleTypesError) {
+        console.error('❌ Error fetching vehicle types:', vehicleTypesError);
+      } else {
+        setVehicleTypes(vehicleTypesData || []);
+        console.log('🚚 Vehicle types loaded:', vehicleTypesData);
+      }
+
+      // Fetch business fleet vehicles
+      const { data: fleetData, error: fleetError } = await supabase
+        .from('business_fleet')
+        .select('id, vehicle_type_id, vehicle_model, plate_number, assigned_driver_id')
+        .eq('business_id', businessId);
+
+      if (fleetError) {
+        console.error('❌ Error fetching fleet:', fleetError);
+      } else {
+        // Fetch driver names for assigned drivers
+        const fleetWithDrivers: FleetVehicle[] = [];
+        if (fleetData) {
+          for (const vehicle of fleetData) {
+            let driverName = 'Unassigned';
+            if (vehicle.assigned_driver_id) {
+              const { data: driverProfile } = await supabase
+                .from('user_profiles')
+                .select('first_name, last_name')
+                .eq('id', vehicle.assigned_driver_id)
+                .single();
+              if (driverProfile) {
+                driverName = `${driverProfile.first_name} ${driverProfile.last_name}`;
+              }
+            }
+            fleetWithDrivers.push({
+              ...vehicle,
+              driver_name: driverName
+            });
+          }
+        }
+        setFleetVehicles(fleetWithDrivers);
+        console.log('🚗 Fleet vehicles loaded:', fleetWithDrivers);
+      }
+
     } catch (error) {
       console.error('❌ Error fetching data:', error);
     } finally {
@@ -306,12 +407,59 @@ export default function DispatchPage() {
     }
   };
 
+  // Calculate pricing based on vehicle type and distance
+  const calculatePricing = (vehicleTypeId: string, distanceKm: number): PricingDetails | null => {
+    const vehicleType = vehicleTypes.find(vt => vt.id === vehicleTypeId);
+    if (!vehicleType) return null;
+
+    const base = vehicleType.base_price;
+    const distancePrice = distanceKm * vehicleType.price_per_km;
+    const total = base + distancePrice;
+
+    return {
+      base_price: base,
+      distance_price: distancePrice,
+      total: total,
+      vehicle_type: vehicleType.name
+    };
+  };
+
+  // Update pricing when vehicle type changes
+  useEffect(() => {
+    if (selectedVehicleType && selectedDeliveries.length === 1) {
+      const delivery = deliveries.find(d => d.id === selectedDeliveries[0]);
+      if (delivery && delivery.distance_km) {
+        const pricing = calculatePricing(selectedVehicleType, delivery.distance_km);
+        setPricingDetails(pricing);
+      }
+    } else {
+      setPricingDetails(null);
+    }
+  }, [selectedVehicleType, selectedDeliveries, deliveries]);
+
+  // Update vehicle type when fleet vehicle changes
+  useEffect(() => {
+    if (selectedFleetVehicle) {
+      const vehicle = fleetVehicles.find(v => v.id === selectedFleetVehicle);
+      if (vehicle) {
+        setSelectedVehicleType(vehicle.vehicle_type_id);
+      }
+    }
+  }, [selectedFleetVehicle, fleetVehicles]);
+
   const handleAssign = () => {
     if (selectedDeliveries.length === 0) {
       alert('Please select at least one delivery to assign');
       return;
     }
-    setSelectedDriver(''); // Reset driver selection
+    // Reset assignment state
+    setSelectedDriver('');
+    setDriverSource('fleet');
+    setSelectedFleetVehicle('');
+    setSelectedVehicleType('');
+    setPricingDetails(null);
+    setPaymentBy('sender');
+    setPaymentMethod('cash');
     setShowAssignModal(true);
   };
 
@@ -343,45 +491,143 @@ export default function DispatchPage() {
   };
 
   const handleManualAssign = async () => {
-    if (!selectedDriver) {
-      alert('Please select a driver');
+    // Validation
+    if (driverSource === 'fleet') {
+      if (!selectedFleetVehicle) {
+        alert('Please select a fleet vehicle');
+        return;
+      }
+    } else {
+      if (!selectedDriver) {
+        alert('Please select a marketplace driver');
+        return;
+      }
+      if (!selectedVehicleType) {
+        alert('Please select a vehicle type for pricing');
+        return;
+      }
+    }
+
+    // Only allow single delivery assignment with this modal (bulk assignment can be added later)
+    if (selectedDeliveries.length !== 1) {
+      alert('Please select exactly one delivery for manual assignment');
       return;
     }
 
     try {
       setAssigning(true);
-
-      // Use Edge Function for manual assignment
-      for (const deliveryId of selectedDeliveries) {
-        try {
-          const result = await supabase.functions.invoke('pair-business-driver', {
-            body: { 
-              deliveryId,
-              mode: 'manual',
-              driverId: selectedDriver
-            }
-          });
-
-          if (result.error) {
-            throw new Error(result.error.message);
-          }
-
-          console.log(`✅ Successfully manually assigned driver to delivery ${deliveryId}:`, result.data);
-        } catch (err) {
-          console.error(`❌ Error manually assigning driver to ${deliveryId}:`, err);
-          throw err;
-        }
+      const deliveryId = selectedDeliveries[0];
+      const delivery = deliveries.find(d => d.id === deliveryId);
+      
+      if (!delivery) {
+        throw new Error('Delivery not found');
       }
+
+      // Get current user ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Prepare parameters based on driver source
+      let assignParams: any = {
+        delivery_id: deliveryId,
+        assigned_by: user.id,
+        assignment_type: 'manual',
+        driver_source: driverSource,
+      };
+
+      if (driverSource === 'fleet') {
+        // Fleet assignment
+        const fleetVehicle = fleetVehicles.find(v => v.id === selectedFleetVehicle);
+        if (!fleetVehicle) {
+          throw new Error('Fleet vehicle not found');
+        }
+
+        if (!fleetVehicle.assigned_driver_id) {
+          throw new Error('Fleet vehicle has no assigned driver');
+        }
+
+        // Calculate pricing for internal tracking
+        const pricing = calculatePricing(fleetVehicle.vehicle_type_id, delivery.distance_km || 0);
+
+        assignParams = {
+          ...assignParams,
+          driver_id: fleetVehicle.assigned_driver_id,
+          vehicle_type_id: fleetVehicle.vehicle_type_id,
+          fleet_vehicle_id: fleetVehicle.id,
+          total_price: pricing?.total || 0,
+          delivery_fee: pricing?.total || 0,
+          payment_by: null,
+          payment_method: null,
+        };
+
+        console.log('🚛 Assigning fleet vehicle:', assignParams);
+      } else {
+        // Marketplace assignment
+        const pricing = calculatePricing(selectedVehicleType, delivery.distance_km || 0);
+        
+        if (!pricing) {
+          throw new Error('Could not calculate pricing');
+        }
+
+        assignParams = {
+          ...assignParams,
+          driver_id: selectedDriver,
+          vehicle_type_id: selectedVehicleType,
+          fleet_vehicle_id: null,
+          total_price: pricing.total,
+          delivery_fee: pricing.total,
+          payment_by: paymentBy,
+          payment_method: paymentMethod,
+        };
+
+        console.log('🏪 Assigning marketplace driver:', assignParams);
+      }
+
+      // Call edge function to assign driver
+      console.log('📤 Sending assignment request:', assignParams);
+      
+      // Use fetch directly to get better error messages
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      
+      const response = await fetch(`${supabaseUrl}/functions/v1/assign-business-driver`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'apikey': supabaseAnonKey || '',
+        },
+        body: JSON.stringify(assignParams)
+      });
+
+      const data = await response.json();
+      console.log('📥 Edge function response:', { status: response.status, data });
+
+      if (!response.ok) {
+        console.error('❌ Edge function error:', data);
+        throw new Error(data.error || `Edge function returned ${response.status}`);
+      }
+
+      if (!data.success) {
+        console.error('❌ Assignment failed:', data);
+        throw new Error(data.error || 'Assignment failed');
+      }
+
+      console.log('✅ Successfully assigned delivery:', data);
 
       // Refresh data and close modal
       await fetchData();
       setShowAssignModal(false);
       setSelectedDeliveries([]);
       setSelectedDriver('');
-      alert(`Successfully assigned driver to ${selectedDeliveries.length} delivery(ies)`);
+      setSelectedFleetVehicle('');
+      setSelectedVehicleType('');
+      alert(`Successfully assigned delivery (${driverSource})`);
     } catch (error) {
       console.error('❌ Error manually assigning:', error);
-      alert('Failed to manually assign deliveries');
+      alert(`Failed to assign delivery: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setAssigning(false);
     }
@@ -725,14 +971,15 @@ export default function DispatchPage() {
 
       {/* Assignment Modal */}
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Assign Drivers</DialogTitle>
+            <DialogTitle>Assign Delivery</DialogTitle>
             <DialogDescription>
-              {selectedDeliveries.length} delivery(ies) selected. Choose how to assign drivers.
+              {selectedDeliveries.length} delivery selected. Configure assignment details.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {/* Assignment Mode */}
             <div className="grid gap-3">
               <Card
                 className={`cursor-pointer transition-all ${
@@ -749,8 +996,7 @@ export default function DispatchPage() {
                   <div className="flex-1">
                     <h4 className="font-semibold mb-1">Auto Assign</h4>
                     <p className="text-sm text-muted-foreground">
-                      System automatically assigns best available drivers based on vehicle type
-                      and availability
+                      System automatically assigns best available drivers
                     </p>
                   </div>
                 </CardContent>
@@ -771,52 +1017,212 @@ export default function DispatchPage() {
                   <div className="flex-1">
                     <h4 className="font-semibold mb-1">Manual Assign</h4>
                     <p className="text-sm text-muted-foreground">
-                      Choose a specific driver for the selected deliveries
+                      Manually configure vehicle, driver, and pricing
                     </p>
                   </div>
                 </CardContent>
               </Card>
             </div>
 
-            {/* Driver Selection for Manual Mode */}
+            {/* Manual Assignment Configuration */}
             {assignmentMode === 'manual' && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                  <Users className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Select Driver</span>
+              <div className="space-y-4">
+                {/* Driver Source Selection */}
+                <div className="space-y-3">
+                  <Label className="text-base font-semibold">Driver Source</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Card
+                      className={`cursor-pointer transition-all ${
+                        driverSource === 'fleet'
+                          ? 'border-primary bg-primary/5'
+                          : 'hover:border-primary/50'
+                      }`}
+                      onClick={() => setDriverSource('fleet')}
+                    >
+                      <CardContent className="p-4 text-center">
+                        <Building2 className="h-8 w-8 mx-auto mb-2 text-primary" />
+                        <h4 className="font-semibold mb-1">Internal Fleet</h4>
+                        <p className="text-xs text-muted-foreground">
+                          Use your own vehicles
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card
+                      className={`cursor-pointer transition-all ${
+                        driverSource === 'marketplace'
+                          ? 'border-primary bg-primary/5'
+                          : 'hover:border-primary/50'
+                      }`}
+                      onClick={() => setDriverSource('marketplace')}
+                    >
+                      <CardContent className="p-4 text-center">
+                        <Store className="h-8 w-8 mx-auto mb-2 text-primary" />
+                        <h4 className="font-semibold mb-1">Marketplace</h4>
+                        <p className="text-xs text-muted-foreground">
+                          External drivers
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </div>
                 </div>
-                <Select value={selectedDriver} onValueChange={setSelectedDriver}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose an available driver..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {drivers.filter(d => d.is_online === true).length === 0 ? (
-                      <div className="p-2 text-sm text-muted-foreground text-center">
-                        <Users className="h-4 w-4 mx-auto mb-1 opacity-50" />
-                        No drivers currently online
-                        <div className="text-xs mt-1">Drivers will appear here automatically when they come online</div>
-                      </div>
-                    ) : (
-                      drivers
-                        .filter(d => d.is_online === true)
-                        .map((driver) => (
-                          <SelectItem key={driver.id} value={driver.id}>
-                            <div className="flex items-center gap-2">
-                              <div className="h-2 w-2 bg-green-500 rounded-full"></div>
-                              {driver.full_name} - {driver.phone}
+
+                {/* Fleet Vehicle Selection */}
+                {driverSource === 'fleet' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="fleet-vehicle">Select Fleet Vehicle</Label>
+                    <Select value={selectedFleetVehicle} onValueChange={setSelectedFleetVehicle}>
+                      <SelectTrigger id="fleet-vehicle">
+                        <SelectValue placeholder="Choose a vehicle from your fleet..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {fleetVehicles.length === 0 ? (
+                          <div className="p-2 text-sm text-muted-foreground text-center">
+                            No fleet vehicles available
+                          </div>
+                        ) : (
+                          fleetVehicles.map((vehicle) => (
+                            <SelectItem key={vehicle.id} value={vehicle.id}>
+                              <div className="flex items-center gap-2">
+                                <Truck className="h-4 w-4" />
+                                {vehicle.vehicle_model} - {vehicle.plate_number}
+                                <span className="text-xs text-muted-foreground ml-2">
+                                  ({vehicle.driver_name})
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Internal fleet deliveries do not require payment processing
+                    </p>
+                  </div>
+                )}
+
+                {/* Marketplace Driver Selection */}
+                {driverSource === 'marketplace' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="vehicle-type">Vehicle Type</Label>
+                      <Select value={selectedVehicleType} onValueChange={setSelectedVehicleType}>
+                        <SelectTrigger id="vehicle-type">
+                          <SelectValue placeholder="Choose vehicle type..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {vehicleTypes.map((vt) => (
+                            <SelectItem key={vt.id} value={vt.id}>
+                              {vt.name} - ₱{vt.base_price} base + ₱{vt.price_per_km}/km
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="marketplace-driver">Select Driver</Label>
+                      <Select value={selectedDriver} onValueChange={setSelectedDriver}>
+                        <SelectTrigger id="marketplace-driver">
+                          <SelectValue placeholder="Choose an available driver..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {drivers.filter(d => d.is_online === true && d.vehicle_type_id === selectedVehicleType).length === 0 ? (
+                            <div className="p-2 text-sm text-muted-foreground text-center">
+                              No drivers available for this vehicle type
                             </div>
-                          </SelectItem>
-                        ))
-                    )}
-                  </SelectContent>
-                </Select>
+                          ) : (
+                            drivers
+                              .filter(d => d.is_online === true && d.vehicle_type_id === selectedVehicleType)
+                              .map((driver) => (
+                                <SelectItem key={driver.id} value={driver.id}>
+                                  <div className="flex items-center gap-2">
+                                    <div className="h-2 w-2 bg-green-500 rounded-full"></div>
+                                    {driver.full_name} - {driver.phone}
+                                  </div>
+                                </SelectItem>
+                              ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                )}
+
+                {/* Pricing Calculator */}
+                {pricingDetails && (
+                  <Card className="border-primary/50">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <DollarSign className="h-4 w-4" />
+                        Pricing Breakdown
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Vehicle:</span>
+                        <span className="font-medium">{pricingDetails.vehicle_type}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Base Price:</span>
+                        <span>₱{pricingDetails.base_price.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Distance Charge:</span>
+                        <span>₱{pricingDetails.distance_price.toFixed(2)}</span>
+                      </div>
+                      <Separator />
+                      <div className="flex justify-between">
+                        <span className="font-semibold">Total:</span>
+                        <span className="text-lg font-bold text-primary">
+                          ₱{pricingDetails.total.toFixed(2)}
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Payment Fields (Marketplace Only) */}
+                {driverSource === 'marketplace' && (
+                  <div className="space-y-3">
+                    <Label className="text-base font-semibold">Payment Details</Label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="payment-by">Who Pays?</Label>
+                        <Select value={paymentBy} onValueChange={(v) => setPaymentBy(v as any)}>
+                          <SelectTrigger id="payment-by">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="sender">Sender</SelectItem>
+                            <SelectItem value="recipient">Recipient</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="payment-method">Method</Label>
+                        <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as any)}>
+                          <SelectTrigger id="payment-method">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="cash">Cash</SelectItem>
+                            <SelectItem value="creditCard">Credit Card</SelectItem>
+                            <SelectItem value="debitCard">Debit Card</SelectItem>
+                            <SelectItem value="maya">Maya</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Status Info */}
             <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
               <Truck className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm text-muted-foreground">
-                {drivers.filter(d => d.is_online === true).length} drivers available
+                {drivers.filter(d => d.is_online === true).length} marketplace drivers available
               </span>
             </div>
           </div>
@@ -826,7 +1232,7 @@ export default function DispatchPage() {
             </Button>
             <Button
               onClick={assignmentMode === 'auto' ? handleAutoAssign : handleManualAssign}
-              disabled={assigning || (assignmentMode === 'manual' && !selectedDriver)}
+              disabled={assigning}
             >
               {assigning ? (
                 <>
@@ -836,7 +1242,7 @@ export default function DispatchPage() {
               ) : (
                 <>
                   <UserCheck className="h-4 w-4 mr-2" />
-                  {assignmentMode === 'auto' ? 'Auto Assign' : 'Assign to Driver'}
+                  {assignmentMode === 'auto' ? 'Auto Assign' : 'Assign Delivery'}
                 </>
               )}
             </Button>

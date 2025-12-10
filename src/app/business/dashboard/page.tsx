@@ -15,18 +15,7 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
-// Dynamically import map to avoid SSR issues
-const DynamicMap = dynamic(() => import('@/components/dashboard/FleetMap'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[400px] bg-gray-50 rounded-lg">
-      <div className="text-center">
-        <Map className="h-8 w-8 animate-pulse mx-auto mb-2 text-gray-400" />
-        <p className="text-sm text-gray-500">Loading map...</p>
-      </div>
-    </div>
-  )
-});
+
 
 // Dynamically import charts to avoid SSR issues
 const DynamicCharts = dynamic(() => import('@/components/dashboard/DashboardCharts'), {
@@ -94,7 +83,7 @@ export default function BusinessDashboard() {
     completionRate: 0,
     avgDeliveryTime: 0,
   });
-  const [onlineDrivers, setOnlineDrivers] = useState<OnlineDriver[]>([]);
+
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [activeDeliveries, setActiveDeliveries] = useState<Delivery[]>([]);
   const [recentDeliveries, setRecentDeliveries] = useState<Delivery[]>([]);
@@ -136,63 +125,6 @@ export default function BusinessDashboard() {
       setBusinessId(userProfile.business_id);
     }
   };
-
-  const fetchOnlineDrivers = useCallback(async () => {
-    if (!businessId) return;
-
-    try {
-      const { data: driversData, error } = await supabase
-        .from('driver_profiles')
-        .select(`
-          id,
-          current_latitude,
-          current_longitude,
-          vehicle_model,
-          plate_number,
-          rating,
-          total_deliveries,
-          location_updated_at,
-          employment_type,
-          managed_by_business_id
-        `)
-        .eq('is_online', true)
-        .not('current_latitude', 'is', null)
-        .not('current_longitude', 'is', null);
-
-      if (error) throw error;
-
-      // Fetch user profiles for each driver
-      const driversWithProfiles: OnlineDriver[] = [];
-      for (const driver of driversData || []) {
-        try {
-          const { data: userProfile } = await supabase
-            .from('user_profiles')
-            .select('first_name, last_name, phone_number')
-            .eq('id', driver.id)
-            .single();
-
-          // Only include fleet drivers from this business and independent drivers
-          const shouldInclude = 
-            driver.employment_type === 'independent' ||
-            (driver.employment_type === 'fleet_driver' && driver.managed_by_business_id === businessId);
-
-          if (shouldInclude) {
-            driversWithProfiles.push({
-              ...driver,
-              full_name: userProfile ? `${userProfile.first_name} ${userProfile.last_name}` : `Driver ${driver.id.substring(0, 8)}`,
-              phone: userProfile?.phone_number || 'N/A'
-            });
-          }
-        } catch (profileError) {
-          console.warn(`Could not fetch profile for driver ${driver.id}`);
-        }
-      }
-
-      setOnlineDrivers(driversWithProfiles);
-    } catch (error) {
-      console.error('Error fetching online drivers:', error);
-    }
-  }, [businessId, supabase]);
 
   const fetchDashboardData = async () => {
     if (!businessId) return;
@@ -327,8 +259,7 @@ export default function BusinessDashboard() {
         ]
       });
 
-      // Fetch online drivers
-      await fetchOnlineDrivers();
+
 
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
@@ -357,27 +288,8 @@ export default function BusinessDashboard() {
       )
       .subscribe();
 
-    // Subscribe to driver location updates
-    const driversChannel = supabase
-      .channel('dashboard-drivers')
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'driver_profiles',
-        },
-        (payload) => {
-          if (payload.new.current_latitude && payload.new.current_longitude) {
-            fetchOnlineDrivers();
-          }
-        }
-      )
-      .subscribe();
-
     return () => {
       supabase.removeChannel(deliveriesChannel);
-      supabase.removeChannel(driversChannel);
     };
   };
 
@@ -491,20 +403,6 @@ export default function BusinessDashboard() {
 
         <Card className="relative overflow-hidden">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Fleet</CardTitle>
-            <MapPin className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{onlineDrivers.length}</div>
-            <p className="text-xs text-muted-foreground">
-              Online drivers
-            </p>
-          </CardContent>
-          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-green-600 to-green-400"></div>
-        </Card>
-
-        <Card className="relative overflow-hidden">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Completion Rate</CardTitle>
             <TrendingUp className="h-4 w-4 text-purple-600" />
           </CardHeader>
@@ -533,111 +431,7 @@ export default function BusinessDashboard() {
         </Card>
       </motion.div>
 
-      {/* Main Content */}
-      <div className="grid gap-6 md:grid-cols-3">
-        {/* Fleet Map */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
-          className="md:col-span-2"
-        >
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <MapPin className="h-5 w-5 text-green-600" />
-                    Live Fleet Tracking
-                  </CardTitle>
-                  <CardDescription>
-                    {onlineDrivers.length} drivers online • Real-time locations
-                  </CardDescription>
-                </div>
-                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                  <div className="h-2 w-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
-                  Live
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <DynamicMap drivers={onlineDrivers} />
-            </CardContent>
-          </Card>
-        </motion.div>
 
-        {/* Online Drivers List */}
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.2 }}
-        >
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Users className="h-5 w-5 text-blue-600" />
-                Online Drivers
-              </CardTitle>
-              <CardDescription>
-                Currently available fleet
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {onlineDrivers.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">
-                    <Users className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                    <p className="text-sm">No drivers online</p>
-                    <p className="text-xs text-gray-400 mt-1">Drivers will appear here when they go online</p>
-                  </div>
-                ) : (
-                  onlineDrivers.slice(0, 6).map((driver) => (
-                    <div key={driver.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <div className="relative">
-                          <div className="h-10 w-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-                            {driver.full_name.charAt(0)}
-                          </div>
-                          <div className="absolute -top-1 -right-1 h-4 w-4 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
-                            <div className="h-2 w-2 bg-white rounded-full"></div>
-                          </div>
-                        </div>
-                        <div>
-                          <div className="font-medium text-sm">{driver.full_name}</div>
-                          <div className="text-xs text-gray-500">
-                            {driver.employment_type === 'fleet_driver' ? (
-                              <Badge variant="outline" className="text-xs py-0 px-1">Fleet</Badge>
-                            ) : (
-                              <Badge variant="secondary" className="text-xs py-0 px-1">Independent</Badge>
-                            )}
-                            {driver.vehicle_model && (
-                              <span className="ml-2">{driver.vehicle_model}</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="flex items-center gap-1 text-xs text-gray-500">
-                          <Activity className="h-3 w-3" />
-                          {driver.rating?.toFixed(1) || 'N/A'}
-                        </div>
-                        <div className="text-xs text-gray-400">
-                          {driver.total_deliveries || 0} trips
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-              {onlineDrivers.length > 6 && (
-                <Button variant="outline" className="w-full mt-4" asChild>
-                  <Link href="/business/fleet">View All Drivers</Link>
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        </motion.div>
-      </div>
 
       {/* Charts and Analytics */}
       <motion.div
@@ -656,7 +450,7 @@ export default function BusinessDashboard() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {chartData && <DynamicCharts deliveries={deliveries} drivers={onlineDrivers} isLoading={loading} />}
+            {chartData && <DynamicCharts deliveries={deliveries} drivers={[]} isLoading={loading} />}
           </CardContent>
         </Card>
       </motion.div>

@@ -32,11 +32,14 @@ export function ThemeProvider({
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
+    // Only run on client side
+    if (typeof window === 'undefined') return;
+    
     // Prevent transitions on initial load
     document.documentElement.classList.add('no-transition');
     
     // Initialize theme from localStorage on client side only
-    const storedTheme = localStorage?.getItem(storageKey) as Theme;
+    const storedTheme = window.localStorage.getItem(storageKey) as Theme;
     if (storedTheme) {
       setTheme(storedTheme);
     }
@@ -69,7 +72,9 @@ export function ThemeProvider({
   const value = {
     theme,
     setTheme: (theme: Theme) => {
-      localStorage?.setItem(storageKey, theme);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(storageKey, theme);
+      }
       setTheme(theme);
     },
   };

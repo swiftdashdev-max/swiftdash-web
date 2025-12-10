@@ -7,36 +7,13 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { User, Briefcase, Shield } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
-const roles = {
-  business: {
-    icon: <Briefcase className="h-5 w-5 mr-2" />,
-    title: 'Business',
-    dashboard: '/business/dashboard',
-  },
-  admin: {
-    icon: <Shield className="h-5 w-5 mr-2" />,
-    title: 'Admin',
-    dashboard: '/admin/dashboard',
-  },
-  crm: {
-    icon: <User className="h-5 w-5 mr-2" />,
-    title: 'CRM',
-    dashboard: '/crm/dashboard',
-  },
-};
-
-type Role = keyof typeof roles;
-
 export default function LoginPage() {
   const router = useRouter();
-  const [selectedRole, setSelectedRole] = useState<Role>('business');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -48,22 +25,43 @@ export default function LoginPage() {
     setError('');
     const supabase = createClient();
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (error) {
-      setError(error.message);
+      if (signInError) {
+        throw signInError;
+      }
+
+      if (!data.user) {
+        throw new Error('No user data returned');
+      }
+
+      // Verify user is a business user (this is business-only login)
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('user_type')
+        .eq('id', data.user.id)
+        .single();
+
+      if (profileError) {
+        throw new Error('Failed to fetch user profile');
+      }
+
+      if (profile.user_type !== 'business') {
+        await supabase.auth.signOut();
+        throw new Error('This login is for business accounts only. Admins and CRM users should use their specific portals.');
+      }
+
+      // Redirect to business dashboard
+      router.push('/business/dashboard');
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || 'An error occurred during login');
       setLoading(false);
-      return;
     }
-
-    // On successful login, Supabase sets a cookie and the middleware will handle the session.
-    // We can now redirect to the appropriate dashboard.
-    // A server component on the dashboard page should handle role verification.
-    router.push(roles[selectedRole].dashboard);
-    // No need to set loading to false here as we are navigating away.
   };
 
   return (
@@ -119,75 +117,51 @@ export default function LoginPage() {
                 height={48}
               />
             </Link>
-            <CardTitle className="text-2xl font-bold">Welcome Back</CardTitle>
+            <CardTitle className="text-2xl font-bold">Business Login</CardTitle>
+            <p className="text-sm text-muted-foreground mt-2">Sign in to your business account</p>
           </CardHeader>
           <CardContent>
-            <Tabs
-              value={selectedRole}
-              onValueChange={(value) => setSelectedRole(value as Role)}
-              className="w-full"
-            >
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="business">
-                  {roles.business.icon}
-                  {roles.business.title}
-                </TabsTrigger>
-                <TabsTrigger value="admin">
-                  {roles.admin.icon}
-                  {roles.admin.title}
-                </TabsTrigger>
-                <TabsTrigger value="crm">
-                  {roles.crm.icon}
-                  {roles.crm.title}
-                </TabsTrigger>
-              </TabsList>
-              <form onSubmit={handleLogin}>
-                <div className="space-y-4 mt-6">
-                  {error && (
-                    <Alert variant="destructive">
-                      <AlertDescription>{error}</AlertDescription>
-                    </Alert>
-                  )}
-                  <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
-                    <Input 
-                      id="email" 
-                      type="email" 
-                      placeholder="you@example.com" 
-                      required 
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Input 
-                      id="password" 
-                      type="password" 
-                      required 
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </div>
+            <form onSubmit={handleLogin}>
+              <div className="space-y-4">
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input 
+                    id="email" 
+                    type="email" 
+                    placeholder="business@company.com" 
+                    required 
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </div>
-                <Button type="submit" className="w-full mt-8" disabled={loading}>
-                  {loading ? 'Logging in...' : `Login as ${roles[selectedRole].title}`}
-                </Button>
-                <div className="mt-4 text-center text-sm">
-                  {selectedRole === 'business' && (
-                    <p>
-                      Don&apos;t have an account?{' '}
-                      <Link href="/business/signup" className="underline">
-                        Sign up
-                      </Link>
-                    </p>
-                  )}
-                   {selectedRole !== 'business' && (
-                    <p className="text-muted-foreground">Internal access only.</p>
-                  )}
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input 
+                    id="password" 
+                    type="password" 
+                    required 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
                 </div>
-              </form>
-            </Tabs>
+              </div>
+              <Button type="submit" className="w-full mt-8" disabled={loading}>
+                {loading ? 'Logging in...' : 'Login to Business Portal'}
+              </Button>
+              <div className="mt-4 text-center text-sm">
+                <p>
+                  Don&apos;t have an account?{' '}
+                  <Link href="/business/signup" className="underline">
+                    Sign up
+                  </Link>
+                </p>
+              </div>
+            </form>
           </CardContent>
         </Card>
       </motion.div>
