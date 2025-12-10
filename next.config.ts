@@ -5,9 +5,6 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   images: {
     remotePatterns: [
       {
@@ -30,6 +27,8 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // Empty turbopack config to satisfy Next.js 16 requirement
+  turbopack: {},
   webpack: (config, { isServer }) => {
     if (isServer) {
       // Patch global.localStorage for server-side rendering
