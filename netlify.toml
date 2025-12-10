@@ -1,5 +1,5 @@
 [build]
-  command = "npm install --legacy-peer-deps && npm run build"
+  command = "npm run build"
   publish = ".next"
 
 [[plugins]]
@@ -8,6 +8,7 @@
 # Configure secrets scanning to allow public API keys
 [build.environment]
   SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_ABLY_CLIENT_KEY"
+  NPM_FLAGS = "--legacy-peer-deps"
 
 # Configure headers for optimal caching
 [[headers]]
