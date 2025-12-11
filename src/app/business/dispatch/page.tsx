@@ -16,6 +16,14 @@ import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetFooter,
+} from '@/components/ui/sheet';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -129,6 +137,10 @@ export default function DispatchPage() {
   const [loading, setLoading] = useState(true);
   const [realtimeUpdates, setRealtimeUpdates] = useState(0); // Track real-time updates
   const [selectedDeliveries, setSelectedDeliveries] = useState<string[]>([]);
+  const [selectedDeliveryForView, setSelectedDeliveryForView] = useState<Delivery | null>(null);
+  const [showDetailsPanel, setShowDetailsPanel] = useState(false);
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [editFormData, setEditFormData] = useState<Partial<Delivery>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -654,9 +666,62 @@ export default function DispatchPage() {
       );
 
       fetchData();
+      if (selectedDeliveryForView?.id === id) {
+        setShowDetailsPanel(false);
+        setSelectedDeliveryForView(null);
+      }
     } catch (error) {
       console.error('❌ Error cancelling delivery:', error);
       alert('Failed to cancel delivery');
+    }
+  };
+
+  const handleViewDetails = (delivery: Delivery) => {
+    setSelectedDeliveryForView(delivery);
+    setEditFormData(delivery);
+    setIsEditingDetails(false);
+    setShowDetailsPanel(true);
+  };
+
+  const handleStartEdit = () => {
+    setIsEditingDetails(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingDetails(false);
+    setEditFormData(selectedDeliveryForView || {});
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedDeliveryForView) return;
+
+    try {
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          pickup_address: editFormData.pickup_address,
+          dropoff_address: editFormData.dropoff_address,
+          vehicle_type_id: editFormData.vehicle_type_id,
+          scheduled_pickup_time: editFormData.scheduled_pickup_time,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', selectedDeliveryForView.id);
+
+      if (error) throw error;
+
+      alert('Delivery details updated successfully');
+      setIsEditingDetails(false);
+      await fetchData();
+      
+      // Update the selected delivery view
+      const updated = deliveries.find(d => d.id === selectedDeliveryForView.id);
+      if (updated) {
+        setSelectedDeliveryForView(updated);
+        setEditFormData(updated);
+      }
+    } catch (error) {
+      console.error('❌ Error updating delivery:', error);
+      alert('Failed to update delivery details');
     }
   };
 
@@ -886,9 +951,16 @@ export default function DispatchPage() {
                 filteredDeliveries.map((delivery) => (
                   <TableRow
                     key={delivery.id}
-                    className={selectedDeliveries.includes(delivery.id) ? 'bg-muted/50' : ''}
+                    className={`cursor-pointer hover:bg-muted/50 transition-colors ${selectedDeliveries.includes(delivery.id) ? 'bg-muted/50' : ''}`}
+                    onClick={(e) => {
+                      // Don't trigger if clicking on checkbox or action menu
+                      if ((e.target as HTMLElement).closest('button, input[type="checkbox"]')) {
+                        return;
+                      }
+                      handleViewDetails(delivery);
+                    }}
                   >
-                    <TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         checked={selectedDeliveries.includes(delivery.id)}
                         onCheckedChange={() => handleSelectDelivery(delivery.id)}
@@ -927,7 +999,7 @@ export default function DispatchPage() {
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(delivery.created_at).toLocaleDateString()}
                     </TableCell>
-                    <TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon">
@@ -938,6 +1010,12 @@ export default function DispatchPage() {
                           <DropdownMenuLabel>Actions</DropdownMenuLabel>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
+                            onClick={() => handleViewDetails(delivery)}
+                          >
+                            <Package className="h-4 w-4 mr-2" />
+                            View Details
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
                             onClick={() => {
                               setSelectedDeliveries([delivery.id]);
                               handleAssign();
@@ -946,7 +1024,10 @@ export default function DispatchPage() {
                             <UserCheck className="h-4 w-4 mr-2" />
                             Assign Driver
                           </DropdownMenuItem>
-                          <DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => {
+                            handleViewDetails(delivery);
+                            setTimeout(() => handleStartEdit(), 100);
+                          }}>
                             <Edit className="h-4 w-4 mr-2" />
                             Edit Details
                           </DropdownMenuItem>
@@ -1249,6 +1330,243 @@ export default function DispatchPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delivery Details Panel */}
+      <Sheet open={showDetailsPanel} onOpenChange={setShowDetailsPanel}>
+        <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Delivery Details</SheetTitle>
+            <SheetDescription>
+              {isEditingDetails ? 'Edit delivery information' : 'View complete delivery information'}
+            </SheetDescription>
+          </SheetHeader>
+
+          {selectedDeliveryForView && (
+            <div className="space-y-6 py-6">
+              {/* Header Info */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Tracking Number</Label>
+                    <p className="font-mono font-semibold text-lg">{selectedDeliveryForView.tracking_number}</p>
+                  </div>
+                  {getStatusBadge(selectedDeliveryForView.status)}
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Delivery Type</Label>
+                    <div className="mt-1">
+                      <Badge variant="outline">
+                        {selectedDeliveryForView.delivery_type === 'multi' ? (
+                          <>
+                            <Package className="h-3 w-3 mr-1" />
+                            Multi-Stop
+                          </>
+                        ) : (
+                          'Single Delivery'
+                        )}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Created</Label>
+                    <p className="mt-1 text-sm">{new Date(selectedDeliveryForView.created_at).toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Addresses */}
+              <div className="space-y-4">
+                <h3 className="font-semibold flex items-center gap-2">
+                  <MapPin className="h-4 w-4" />
+                  Addresses
+                </h3>
+                
+                {isEditingDetails ? (
+                  <div className="space-y-4">
+                    <div>
+                      <Label htmlFor="pickup">Pickup Address</Label>
+                      <Input
+                        id="pickup"
+                        value={editFormData.pickup_address || ''}
+                        onChange={(e) => setEditFormData({ ...editFormData, pickup_address: e.target.value })}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="dropoff">Dropoff Address</Label>
+                      <Input
+                        id="dropoff"
+                        value={editFormData.dropoff_address || ''}
+                        onChange={(e) => setEditFormData({ ...editFormData, dropoff_address: e.target.value })}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex gap-3 p-3 bg-green-50 dark:bg-green-950/20 rounded-lg">
+                      <MapPin className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <Label className="text-xs text-green-700 dark:text-green-400">Pickup</Label>
+                        <p className="text-sm mt-1">{selectedDeliveryForView.pickup_address}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 p-3 bg-red-50 dark:bg-red-950/20 rounded-lg">
+                      <Navigation className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <Label className="text-xs text-red-700 dark:text-red-400">Dropoff</Label>
+                        <p className="text-sm mt-1">{selectedDeliveryForView.dropoff_address}</p>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {selectedDeliveryForView.dropoff_stops && selectedDeliveryForView.dropoff_stops.length > 0 && (
+                  <div className="mt-4">
+                    <Label className="text-xs text-muted-foreground">Additional Stops</Label>
+                    <div className="space-y-2 mt-2">
+                      {selectedDeliveryForView.dropoff_stops.map((stop: any, idx: number) => (
+                        <div key={idx} className="flex gap-2 p-2 bg-muted rounded text-sm">
+                          <span className="font-semibold text-muted-foreground">Stop {idx + 1}:</span>
+                          <span>{stop.address || stop}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Delivery Details */}
+              <div className="space-y-4">
+                <h3 className="font-semibold flex items-center gap-2">
+                  <Package className="h-4 w-4" />
+                  Delivery Information
+                </h3>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Distance</Label>
+                    <p className="mt-1 font-semibold">
+                      {(selectedDeliveryForView.distance_km || selectedDeliveryForView.estimated_distance || 0).toFixed(1)} km
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Total Price</Label>
+                    <p className="mt-1 font-semibold text-lg">
+                      ₱{selectedDeliveryForView.total_price || selectedDeliveryForView.estimated_cost || 0}
+                    </p>
+                  </div>
+                </div>
+
+                {isEditingDetails ? (
+                  <div>
+                    <Label htmlFor="vehicle-type">Vehicle Type</Label>
+                    <Select
+                      value={editFormData.vehicle_type_id || ''}
+                      onValueChange={(value) => setEditFormData({ ...editFormData, vehicle_type_id: value })}
+                    >
+                      <SelectTrigger id="vehicle-type" className="mt-1">
+                        <SelectValue placeholder="Select vehicle type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {vehicleTypes.map((vt) => (
+                          <SelectItem key={vt.id} value={vt.id}>
+                            {vt.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Vehicle Type</Label>
+                    <p className="mt-1">
+                      {vehicleTypes.find(vt => vt.id === selectedDeliveryForView.vehicle_type_id)?.name || 'Not specified'}
+                    </p>
+                  </div>
+                )}
+
+                {selectedDeliveryForView.is_scheduled && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Scheduled Pickup</Label>
+                    {isEditingDetails ? (
+                      <Input
+                        type="datetime-local"
+                        value={editFormData.scheduled_pickup_time?.slice(0, 16) || ''}
+                        onChange={(e) => setEditFormData({ ...editFormData, scheduled_pickup_time: e.target.value })}
+                        className="mt-1"
+                      />
+                    ) : (
+                      <p className="mt-1">
+                        {selectedDeliveryForView.scheduled_pickup_time 
+                          ? new Date(selectedDeliveryForView.scheduled_pickup_time).toLocaleString()
+                          : 'Not scheduled'}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {selectedDeliveryForView.driver_id && (
+                <>
+                  <Separator />
+                  <div className="space-y-2">
+                    <h3 className="font-semibold flex items-center gap-2">
+                      <Truck className="h-4 w-4" />
+                      Assigned Driver
+                    </h3>
+                    <div className="p-3 bg-primary/5 rounded-lg">
+                      <p className="text-sm text-muted-foreground">Driver ID</p>
+                      <p className="font-mono text-sm">{selectedDeliveryForView.driver_id}</p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <SheetFooter className="flex-col sm:flex-row gap-2 mt-6">
+            {isEditingDetails ? (
+              <>
+                <Button variant="outline" onClick={handleCancelEdit} className="w-full sm:w-auto">
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveEdit} className="w-full sm:w-auto">
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Save Changes
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setShowDetailsPanel(false)} className="w-full sm:w-auto">
+                  Close
+                </Button>
+                <Button onClick={handleStartEdit} className="w-full sm:w-auto">
+                  <Edit className="h-4 w-4 mr-2" />
+                  Edit Details
+                </Button>
+                <Button 
+                  onClick={() => {
+                    setSelectedDeliveries([selectedDeliveryForView!.id]);
+                    setShowDetailsPanel(false);
+                    handleAssign();
+                  }}
+                  className="w-full sm:w-auto"
+                >
+                  <UserCheck className="h-4 w-4 mr-2" />
+                  Assign Driver
+                </Button>
+              </>
+            )}
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
