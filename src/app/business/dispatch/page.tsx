@@ -930,80 +930,121 @@ export default function DispatchPage() {
     let successCount = 0;
     const errors: string[] = [];
     
-    // Import bookDelivery function
-    const { bookDelivery } = await import('@/lib/supabase/edge-functions');
+    // Import edge functions
+    const { bookDelivery, createMultiStopDelivery } = await import('@/lib/supabase/edge-functions');
+
+    // Helper function to geocode an address
+    const geocodeAddress = async (address: string): Promise<{ lat: number; lng: number } | null> => {
+      try {
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+        if (!apiKey) {
+          throw new Error('Google Maps API key not configured');
+        }
+
+        const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.status === 'OK' && data.results && data.results.length > 0) {
+          const location = data.results[0].geometry.location;
+          return { lat: location.lat, lng: location.lng };
+        }
+        return null;
+      } catch (error) {
+        console.error('Geocoding error:', error);
+        return null;
+      }
+    };
 
     for (let i = 0; i < csvData.length; i++) {
       const order = csvData[i];
       
       try {
         if (order.type === 'single') {
+          // Geocode pickup and dropoff addresses
+          const pickupCoords = await geocodeAddress(order.pickupAddress);
+          const dropoffCoords = await geocodeAddress(order.dropoffAddress);
+
+          if (!pickupCoords || !dropoffCoords) {
+            errors.push(`Order ${i + 1}: Failed to geocode addresses`);
+            continue;
+          }
+
           // Single delivery
           const deliveryData = {
-            business_id: businessId,
-            pickup_location: {
+            vehicleTypeId: selectedVehicleType,
+            pickup: {
               address: order.pickupAddress,
-              contact_name: order.contactName,
-              contact_phone: order.contactPhone,
-              instructions: order.instructions,
+              location: pickupCoords,
+              contactName: order.contactName,
+              contactPhone: order.contactPhone,
+              instructions: order.instructions || '',
             },
-            dropoff_location: {
+            dropoff: {
               address: order.dropoffAddress,
-              contact_name: order.contactName,
-              contact_phone: order.contactPhone,
-              instructions: order.instructions,
+              location: dropoffCoords,
+              contactName: order.contactName,
+              contactPhone: order.contactPhone,
+              instructions: order.instructions || '',
             },
-            package_details: {
-              description: order.packageDescription,
-              weight: order.packageWeight,
-              value: order.packageValue,
+            package: {
+              description: order.packageDescription || '',
+              weightKg: order.packageWeight || 0,
+              value: order.packageValue || 0,
             },
-            vehicle_type_id: selectedVehicleType,
-            status: 'pending',
           };
 
           const result = await bookDelivery(deliveryData);
-          
-          if (result.success) {
-            successCount++;
-          } else {
-            errors.push(`Order ${i + 1}: ${result.error || 'Failed to create delivery'}`);
-          }
+          successCount++;
         } else if (order.type === 'multi') {
+          // Geocode pickup address
+          const pickupCoords = await geocodeAddress(order.pickupAddress);
+          if (!pickupCoords) {
+            errors.push(`Group "${order.orderGroup}": Failed to geocode pickup address`);
+            continue;
+          }
+
+          // Geocode all dropoff addresses
+          const dropoffStopsWithCoords = [];
+          let geocodeFailed = false;
+
+          for (const stop of order.stops) {
+            const dropoffCoords = await geocodeAddress(stop.dropoffAddress);
+            if (!dropoffCoords) {
+              errors.push(`Group "${order.orderGroup}": Failed to geocode address "${stop.dropoffAddress}"`);
+              geocodeFailed = true;
+              break;
+            }
+
+            dropoffStopsWithCoords.push({
+              address: stop.dropoffAddress,
+              location: dropoffCoords,
+              contactName: stop.contactName,
+              contactPhone: stop.contactPhone,
+              instructions: stop.instructions || '',
+              packageDescription: stop.packageDescription || '',
+              packageWeight: stop.packageWeight || 0,
+            });
+          }
+
+          if (geocodeFailed) continue;
+
           // Multi-stop delivery
           const firstStop = order.stops[0];
           const deliveryData = {
-            business_id: businessId,
-            delivery_type: 'multi',
-            pickup_location: {
+            vehicleTypeId: selectedVehicleType,
+            pickup: {
               address: order.pickupAddress,
-              contact_name: firstStop.contactName,
-              contact_phone: firstStop.contactPhone,
-              instructions: firstStop.instructions,
+              location: pickupCoords,
+              contactName: firstStop.contactName,
+              contactPhone: firstStop.contactPhone,
+              instructions: firstStop.instructions || '',
             },
-            dropoff_stops: order.stops.map((stop: any, idx: number) => ({
-              stop_number: idx + 1,
-              address: stop.dropoffAddress,
-              contact_name: stop.contactName,
-              contact_phone: stop.contactPhone,
-              instructions: stop.instructions,
-              package_details: {
-                description: stop.packageDescription,
-                weight: stop.packageWeight,
-                value: stop.packageValue,
-              },
-            })),
-            vehicle_type_id: selectedVehicleType,
-            status: 'pending',
+            dropoffStops: dropoffStopsWithCoords,
           };
 
-          const result = await bookDelivery(deliveryData);
-          
-          if (result.success) {
-            successCount++;
-          } else {
-            errors.push(`Group "${order.orderGroup}" (${order.stops.length} stops): ${result.error || 'Failed to create delivery'}`);
-          }
+          const result = await createMultiStopDelivery(deliveryData);
+          successCount++;
         }
       } catch (error: any) {
         const label = order.type === 'multi' ? `Group "${order.orderGroup}"` : `Order ${i + 1}`;
