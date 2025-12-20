@@ -6,13 +6,20 @@ import { motion } from 'framer-motion'
 import { 
   Plus, Search, Filter, Download, MapPin, Calendar,
   Truck, Clock, CheckCircle, XCircle, AlertCircle, 
-  Users, Link as LinkIcon, Eye, Navigation
+  Users, Link as LinkIcon, Eye, Navigation, Copy, Check
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -38,6 +45,7 @@ interface Delivery {
   driver_id: string | null
   assigned_at: string | null
   completed_at: string | null
+  is_multi_stop: boolean
   driver_profiles?: {
     user_profiles: {
       first_name: string
@@ -45,6 +53,15 @@ interface Delivery {
     }
     vehicle_type: string
   }
+}
+
+interface DeliveryStop {
+  stop_number: number
+  tracking_code: string
+  recipient_name: string
+  recipient_phone: string
+  address: string
+  status: string
 }
 
 export default function DeliveriesPage() {
@@ -55,6 +72,10 @@ export default function DeliveriesPage() {
   
   const [searchTerm, setSearchTerm] = useState('')
   const [activeTab, setActiveTab] = useState('pending')
+  const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null)
+  const [showStopsDialog, setShowStopsDialog] = useState(false)
+  const [deliveryStops, setDeliveryStops] = useState<DeliveryStop[]>([])
+  const [copiedCode, setCopiedCode] = useState<string | null>(null)
 
   // Fetch deliveries with React Query
   const { data: deliveries = [], isLoading, refetch } = useQuery({
@@ -107,9 +128,57 @@ export default function DeliveriesPage() {
   const copyTrackingLink = async (trackingNumber: string) => {
     const link = `${window.location.origin}/track/${trackingNumber}`
     await navigator.clipboard.writeText(link)
+    
+    // Track share count analytics
+    const supabase = createClient()
+    await supabase.rpc('increment_share_count', { tracking_num: trackingNumber })
+    
     toast({
-      title: 'Link Copied',
-      description: 'Tracking link copied to clipboard'
+      title: 'Link Copied! 🔗',
+      description: 'Share this link with your customer to track their delivery'
+    })
+  }
+
+  const handleViewStops = async (delivery: Delivery) => {
+    if (!delivery.is_multi_stop) {
+      copyTrackingLink(delivery.tracking_number)
+      return
+    }
+
+    setSelectedDelivery(delivery)
+    setShowStopsDialog(true)
+
+    // Fetch delivery stops
+    const { data, error } = await supabase
+      .from('delivery_stops')
+      .select('stop_number, tracking_code, recipient_name, recipient_phone, address, status')
+      .eq('delivery_id', delivery.id)
+      .gt('stop_number', 0) // Exclude pickup stop
+      .order('stop_number')
+
+    if (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to load delivery stops',
+        variant: 'destructive'
+      })
+      return
+    }
+
+    setDeliveryStops(data || [])
+  }
+
+  const copyStopTrackingLink = async (trackingCode: string) => {
+    const baseUrl = window.location.origin
+    const link = `${baseUrl}/track/${trackingCode}`
+    await navigator.clipboard.writeText(link)
+
+    setCopiedCode(trackingCode)
+    setTimeout(() => setCopiedCode(null), 2000)
+
+    toast({
+      title: 'Stop Link Copied! 🔗',
+      description: 'Private tracking link for this stop only'
     })
   }
 
@@ -128,11 +197,11 @@ export default function DeliveriesPage() {
       case 'picked_up':
         return 'bg-purple-100 text-purple-800'
       case 'cancelled':
-        return 'bg-red-100 text-red-800'
+        return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
       case 'pending':
-        return 'bg-gray-100 text-gray-800'
+        return 'bg-secondary text-secondary-foreground'
       default:
-        return 'bg-gray-100 text-gray-800'
+        return 'bg-secondary text-secondary-foreground'
     }
   }
 
@@ -192,7 +261,78 @@ export default function DeliveriesPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
+      {/* Multi-Stop Tracking Dialog */}
+      <Dialog open={showStopsDialog} onOpenChange={setShowStopsDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5" />
+              Multi-Stop Tracking Links
+            </DialogTitle>
+            <DialogDescription>
+              {selectedDelivery && (
+                <>
+                  Delivery {selectedDelivery.tracking_number} • {deliveryStops.length} stops
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-3 max-h-[400px] overflow-y-auto">
+            {deliveryStops.map((stop) => (
+              <div
+                key={stop.stop_number}
+                className="border rounded-lg p-4 hover:bg-accent transition-colors"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Badge variant="outline">Stop {stop.stop_number}</Badge>
+                      <Badge className={
+                        stop.status === 'completed' ? 'bg-green-100 text-green-800' :
+                        stop.status === 'in_progress' ? 'bg-blue-100 text-blue-800' :
+                        'bg-secondary text-secondary-foreground'
+                      }>
+                        {stop.status}
+                      </Badge>
+                    </div>
+                    <p className="font-medium">{stop.recipient_name || 'No name'}</p>
+                    <p className="text-sm text-muted-foreground">{stop.recipient_phone || 'No phone'}</p>
+                    <p className="text-sm text-muted-foreground mt-1">{stop.address}</p>
+                    <p className="text-xs font-mono text-muted-foreground mt-2">{stop.tracking_code}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={copiedCode === stop.tracking_code ? "default" : "outline"}
+                    onClick={() => copyStopTrackingLink(stop.tracking_code)}
+                  >
+                    {copiedCode === stop.tracking_code ? (
+                      <>
+                        <Check className="h-4 w-4 mr-1" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-4 w-4 mr-1" />
+                        Copy Link
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ))}
+            
+            {deliveryStops.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground">
+                <AlertCircle className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
+                <p>No stops found for this delivery</p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Header */}
       <div className="bg-white border-b">
         <div className="container mx-auto px-6 py-4">
@@ -251,7 +391,7 @@ export default function DeliveriesPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search by tracking number, address, or description..."
                   value={searchTerm}
@@ -280,6 +420,7 @@ export default function DeliveriesPage() {
               formatDate={formatDate}
               router={router}
               copyTrackingLink={copyTrackingLink}
+              handleViewStops={handleViewStops}
             />
           </TabsContent>
 
@@ -301,6 +442,7 @@ export default function DeliveriesPage() {
               formatDate={formatDate}
               router={router}
               copyTrackingLink={copyTrackingLink}
+              handleViewStops={handleViewStops}
             />
           </TabsContent>
 
@@ -322,6 +464,7 @@ export default function DeliveriesPage() {
               formatDate={formatDate}
               router={router}
               copyTrackingLink={copyTrackingLink}
+              handleViewStops={handleViewStops}
             />
           </TabsContent>
         </Tabs>
@@ -347,6 +490,7 @@ interface DeliveryListProps {
   formatDate: (date: string) => string
   router: any
   copyTrackingLink: (trackingNumber: string) => void
+  handleViewStops: (delivery: Delivery) => void
 }
 
 function DeliveryList({
@@ -360,7 +504,8 @@ function DeliveryList({
   formatStatus,
   formatDate,
   router,
-  copyTrackingLink
+  copyTrackingLink,
+  handleViewStops
 }: DeliveryListProps) {
   if (loading) {
     return (
@@ -368,7 +513,7 @@ function DeliveryList({
         <CardContent className="py-12">
           <div className="text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
-            <p className="text-gray-600">Loading orders...</p>
+            <p className="text-muted-foreground">Loading orders...</p>
           </div>
         </CardContent>
       </Card>
@@ -380,9 +525,9 @@ function DeliveryList({
       <Card>
         <CardContent className="py-12">
           <div className="text-center">
-            <Truck className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">{emptyMessage}</h3>
-            <p className="text-gray-600 mb-4">{emptyDescription}</p>
+            <Truck className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+            <h3 className="text-lg font-medium mb-2">{emptyMessage}</h3>
+            <p className="text-muted-foreground mb-4">{emptyDescription}</p>
             {showActions.assignDriver && (
               <Button asChild>
                 <Link href="/business/deliveries/create">
@@ -492,10 +637,10 @@ function DeliveryList({
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => copyTrackingLink(delivery.tracking_number)}
+                        onClick={() => handleViewStops(delivery)}
                       >
                         <LinkIcon className="mr-1 h-4 w-4" />
-                        Copy Link
+                        {delivery.is_multi_stop ? 'View Stops' : 'Copy Link'}
                       </Button>
                     )}
                     <Button size="sm" variant="ghost">

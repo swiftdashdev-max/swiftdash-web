@@ -290,14 +290,15 @@ serve(async (req) => {
         status: 'pending',
       }));
 
-      const { error: stopsErr } = await supabase
+      const { data: insertedStops, error: stopsErr } = await supabase
         .from("delivery_stops")
-        .insert(dropoffStopRecords);
+        .insert(dropoffStopRecords)
+        .select('stop_number, tracking_code, recipient_name, recipient_phone, address');
 
       if (stopsErr) {
         console.error("⚠️ Warning: Failed to create delivery stops:", stopsErr);
       } else {
-        console.log(`✅ Created ${body.dropoffStops.length + 1} delivery stops`);
+        console.log(`✅ Created ${body.dropoffStops.length + 1} delivery stops with tracking codes`);
       }
     } else {
       console.log("ℹ️ delivery_stops table not available, skipping stop records");
@@ -307,6 +308,8 @@ serve(async (req) => {
       success: true, 
       delivery,
       stops: numberOfStops,
+      tracking_number: delivery.tracking_number,
+      stop_tracking_codes: insertedStops || [],
       pricing: {
         base: basePrice,
         distance: distanceCost,

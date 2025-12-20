@@ -4,6 +4,12 @@ import React, { useEffect, useRef, useState, memo, useCallback, useMemo } from '
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { fetchCachedRoute } from '@/lib/route-cache';
+import { 
+  fetchMapboxRoute, 
+  RouteAlternative,
+  getVehicleRoutingProfile,
+  getVehicleExclusions
+} from '@/lib/mapbox-routing';
 
 // Mapbox access token from environment variable
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
@@ -19,6 +25,8 @@ interface RouteInfo {
   distance: number; // in kilometers
   duration: number; // in minutes
   polyline: any; // GeoJSON geometry
+  alternatives?: RouteAlternative[]; // Alternative routes
+  hasTrafficData?: boolean; // Whether route includes congestion data
 }
 
 interface DeliveryMapProps {
@@ -26,6 +34,12 @@ interface DeliveryMapProps {
   dropoffs?: Location[];
   className?: string;
   onRouteCalculated?: (routeInfo: RouteInfo) => void;
+  onPickupDragEnd?: (lat: number, lng: number) => void;
+  onDropoffDragEnd?: (index: number, lat: number, lng: number) => void;
+  vehicleType?: string; // Vehicle type for routing profile
+  showTraffic?: boolean; // Whether to show traffic gradients
+  showAlternatives?: boolean; // Whether to fetch route alternatives
+  selectedRouteIndex?: number; // Which alternative route to display (0 = primary)
 }
 
 // Memoized marker creation functions
@@ -74,12 +88,26 @@ const createDropoffMarkerElement = (index?: number, total?: number) => {
   return el;
 };
 
-const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCalculated }: DeliveryMapProps) => {
+const DeliveryMapComponent = ({ 
+  pickup, 
+  dropoffs = [], 
+  className = '', 
+  onRouteCalculated, 
+  onPickupDragEnd, 
+  onDropoffDragEnd,
+  vehicleType,
+  showTraffic = true,
+  showAlternatives = false,
+  selectedRouteIndex = 0
+}: DeliveryMapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const pickupMarker = useRef<mapboxgl.Marker | null>(null);
   const dropoffMarkers = useRef<mapboxgl.Marker[]>([]);
+  const animationFrameId = useRef<number | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
+  const [routeAlternatives, setRouteAlternatives] = useState<RouteAlternative[]>([]);
+  const [activeRouteIndex, setActiveRouteIndex] = useState(0);
 
   // Memoize coordinates for route calculation to prevent unnecessary re-calculations
   const coordinates = useMemo(() => {
@@ -132,7 +160,10 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     });
 
     map.current.on('error', (e) => {
-      console.error('❌ Map error:', e);
+      console.error('❌ Map error:', e.error || e);
+      if (e.error?.message) {
+        console.error('Error message:', e.error.message);
+      }
     });
 
     // Add navigation controls
@@ -199,8 +230,8 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     // Create pickup marker
     const el = createPickupMarkerElement();
 
-    // Add pickup marker
-    pickupMarker.current = new mapboxgl.Marker({ element: el })
+    // Add pickup marker with draggable option
+    pickupMarker.current = new mapboxgl.Marker({ element: el, draggable: true })
       .setLngLat([pickup.lng, pickup.lat])
       .setPopup(
         new mapboxgl.Popup({ offset: 25 }).setHTML(
@@ -209,6 +240,15 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
         )
       )
       .addTo(map.current);
+
+    // Add dragend event listener
+    if (onPickupDragEnd) {
+      pickupMarker.current.on('dragend', () => {
+        const lngLat = pickupMarker.current!.getLngLat();
+        console.log('🎯 Pickup marker dragged to:', { lat: lngLat.lat, lng: lngLat.lng });
+        onPickupDragEnd(lngLat.lat, lngLat.lng);
+      });
+    }
 
     console.log('✅ Pickup marker added to map');
 
@@ -244,7 +284,7 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       
       const el = createDropoffMarkerElement(index, dropoffs.length);
 
-      const marker = new mapboxgl.Marker({ element: el })
+      const marker = new mapboxgl.Marker({ element: el, draggable: true })
         .setLngLat([dropoff.lng, dropoff.lat])
         .setPopup(
           new mapboxgl.Popup({ offset: 25 }).setHTML(
@@ -252,6 +292,16 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
              <div class="text-xs text-muted-foreground">${dropoff.label || 'Dropoff Point'}</div>`
           )
         );
+      
+      // Add dragend event listener
+      if (onDropoffDragEnd) {
+        const dropoffIndex = index; // Capture index in closure
+        marker.on('dragend', () => {
+          const lngLat = marker.getLngLat();
+          console.log(`🎯 Dropoff marker #${dropoffIndex + 1} dragged to:`, { lat: lngLat.lat, lng: lngLat.lng });
+          onDropoffDragEnd(dropoffIndex, lngLat.lat, lngLat.lng);
+        });
+      }
       
       if (map.current) {
         marker.addTo(map.current);
@@ -277,7 +327,7 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     }
   }, [dropoffs, pickup]);
 
-  // Cached route calculation with optimized debouncing
+  // Cached route calculation with traffic data and alternatives
   const fetchOptimizedRoute = useCallback(async () => {
     if (!map.current || !isMapReady || !coordinates) {
       console.log('⚠️ Skipping route fetch - not ready', {
@@ -289,16 +339,26 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
     }
 
     try {
-      console.log('🚗 Fetching cached route...', { 
+      console.log('🚗 Fetching route with traffic data...', { 
         coordinatesCount: coordinates.length,
-        coordinates: coordinates.map(c => `${c[0].toFixed(3)},${c[1].toFixed(3)}`),
+        vehicleType,
+        showTraffic,
+        showAlternatives
       });
 
-      // Use cached route fetcher
-      const data = await fetchCachedRoute(
-        coordinates,
+      // Get vehicle-specific routing profile and exclusions
+      const profile = getVehicleRoutingProfile(vehicleType);
+      const exclude = getVehicleExclusions(vehicleType);
+
+      // Fetch route with traffic annotations
+      const data = await fetchMapboxRoute(
+        coordinates as [number, number][],
         mapboxgl.accessToken || '',
         {
+          alternatives: showAlternatives,
+          annotations: showTraffic ? ['congestion', 'distance', 'duration'] : ['distance', 'duration'],
+          profile,
+          exclude,
           optimize: coordinates.length > 2,
           overview: 'full',
         }
@@ -309,13 +369,25 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
         return;
       }
 
-      const route = data.routes[0];
+      // Use selected route or primary route
+      const route = data.routes[Math.min(selectedRouteIndex, data.routes.length - 1)];
       const geometry = route.geometry;
 
       if (!geometry || !geometry.coordinates) {
         console.error('❌ Invalid geometry in route:', geometry);
         return;
       }
+
+      // Extract congestion data if available (for logging only, no longer rendering)
+      const congestionData = route.legs?.[0]?.annotation?.congestion || [];
+      const distanceData = route.legs?.[0]?.annotation?.distance || [];
+      const hasTrafficData = congestionData.length > 0 && distanceData.length > 0;
+
+      console.log('🚦 Traffic data:', { 
+        hasTrafficData, 
+        congestionSegments: congestionData.length,
+        distanceSegments: distanceData.length 
+      });
 
       // Calculate distance and duration
       const distanceKm = parseFloat((route.distance / 1000).toFixed(2));
@@ -324,6 +396,9 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       console.log('✅ Route calculated:', {
         distance: `${distanceKm} km`,
         duration: `${durationMin} min`,
+        alternatives: data.routes.length,
+        hasTrafficData,
+        profile
       });
 
       // Store route info and notify parent
@@ -331,20 +406,24 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
         distance: distanceKm,
         duration: durationMin,
         polyline: geometry,
+        alternatives: data.routes,
+        hasTrafficData,
       };
+
+      // Store alternatives in state for UI
+      if (data.routes.length > 1) {
+        setRouteAlternatives(data.routes);
+      } else {
+        setRouteAlternatives([]);
+      }
 
       if (onRouteCalculated) {
         onRouteCalculated(calculatedRoute);
       }
 
-      // Add route to map
+      // Add route to map with traffic gradient
       if (map.current) {
-        console.log('🗺️ Attempting to add route to map', {
-          isStyleLoaded: map.current.isStyleLoaded(),
-          hasSource: !!map.current.getSource('route'),
-          geometryType: geometry?.type,
-          coordinatesCount: geometry?.coordinates?.length
-        });
+        console.log('🗺️ Adding route to map with traffic visualization');
 
         // Wait for style to be ready
         const addOrUpdateRoute = () => {
@@ -353,7 +432,7 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
           try {
             // Add or update route source
             if (!map.current.getSource('route')) {
-              console.log('➕ Adding new route source and layers');
+              console.log('➕ Adding new route source with lineMetrics');
               
               map.current.addSource('route', {
                 type: 'geojson',
@@ -362,10 +441,10 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
                   properties: {},
                   geometry: geometry,
                 },
-                lineMetrics: true,
+                lineMetrics: true, // Required for line-gradient
               });
 
-              // Add route line layer with animated drawing effect
+              // Add route line layer (simple, no traffic gradient)
               map.current.addLayer({
                 id: 'route',
                 type: 'line',
@@ -375,42 +454,48 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
                   'line-cap': 'round',
                 },
                 paint: {
-                  'line-color': '#00d9ff',
-                  'line-width': 8,
+                  'line-color': '#3b82f6',
+                  'line-width': 6,
                   'line-opacity': 0.9,
-                  'line-emissive-strength': 1.0, // Makes line visible on dark map styles
-                  'line-trim-offset': [0, 0], // Start with nothing visible, will grow from pickup
+                  'line-emissive-strength': 1.0,
+                  'line-trim-offset': [0, 0],
                 },
               });
 
               // Animate the route drawing from start to finish
               console.log('🎬 Animating route drawing...');
               let progress = 0;
-              const duration = 1500; // 1.5 seconds animation
+              const animDuration = 1500; // 1.5 seconds animation
               const startTime = performance.now();
 
               const animate = (currentTime: number) => {
-                if (!map.current) return;
+                if (!map.current || !map.current.getLayer('route')) {
+                  animationFrameId.current = null;
+                  return;
+                }
 
                 const elapsed = currentTime - startTime;
-                progress = Math.min(elapsed / duration, 1);
+                progress = Math.min(elapsed / animDuration, 1);
+                const trimValue = Math.max(0, Math.min(1 - progress, 1)); // Clamp between 0 and 1
 
-                // Grow line from pickup (0) toward dropoff (progress)
-                // [0, progress] means show from start (pickup) to current progress point
-                map.current.setPaintProperty('route', 'line-trim-offset', [0, 1 - progress]);
+                map.current.setPaintProperty('route', 'line-trim-offset', [0, trimValue]);
 
                 if (progress < 1) {
-                  requestAnimationFrame(animate);
+                  animationFrameId.current = requestAnimationFrame(animate);
                 } else {
                   console.log('✅ Route animation complete');
-                  // Ensure final state shows full route
-                  if (map.current) {
+                  if (map.current && map.current.getLayer('route')) {
                     map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
                   }
+                  animationFrameId.current = null;
                 }
               };
 
-              requestAnimationFrame(animate);
+              // Cancel any existing animation before starting new one
+              if (animationFrameId.current !== null) {
+                cancelAnimationFrame(animationFrameId.current);
+              }
+              animationFrameId.current = requestAnimationFrame(animate);
 
               // Add directional arrows
               map.current.addLayer({
@@ -427,15 +512,15 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
                 },
                 paint: {
                   'text-color': '#ffffff',
-                  'text-halo-color': '#00d9ff',
+                  'text-halo-color': '#3b82f6',
                   'text-halo-width': 3,
                 },
               });
 
               console.log('✅ Route layers added to map');
             } else {
-              // Update existing route with animation
-              console.log('🔄 Updating existing route with animation');
+              // Update existing route
+              console.log('🔄 Updating existing route');
               const source = map.current.getSource('route') as mapboxgl.GeoJSONSource;
               if (source) {
                 source.setData({
@@ -444,34 +529,40 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
                   geometry: geometry,
                 });
 
-                // Reset and animate the updated route
-                console.log('🎬 Re-animating route drawing...');
+                // Re-animate the updated route
+                console.log('🎬 Re-animating route');
                 let progress = 0;
-                const duration = 1500; // 1.5 seconds animation
+                const animDuration = 1500;
                 const startTime = performance.now();
 
-                const animate = (currentTime: number) => {
-                  if (!map.current) return;
+              const animate = (currentTime: number) => {
+                if (!map.current || !map.current.getLayer('route')) {
+                  animationFrameId.current = null;
+                  return;
+                }
 
-                  const elapsed = currentTime - startTime;
-                  progress = Math.min(elapsed / duration, 1);
+                const elapsed = currentTime - startTime;
+                progress = Math.min(elapsed / animDuration, 1);
+                const trimValue = Math.max(0, Math.min(1 - progress, 1));
 
-                  // Grow line from pickup (0) toward dropoff (progress)
-                  // [0, 1-progress] trims the end, showing more as progress increases
-                  map.current.setPaintProperty('route', 'line-trim-offset', [0, 1 - progress]);
+                map.current.setPaintProperty('route', 'line-trim-offset', [0, trimValue]);
 
-                  if (progress < 1) {
-                    requestAnimationFrame(animate);
-                  } else {
-                    console.log('✅ Route animation complete');
-                    // Ensure final state shows full route
-                    if (map.current) {
-                      map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
-                    }
+                if (progress < 1) {
+                  animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                  console.log('✅ Route animation complete');
+                  if (map.current && map.current.getLayer('route')) {
+                    map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
                   }
-                };
+                  animationFrameId.current = null;
+                }
+              };
 
-                requestAnimationFrame(animate);
+              // Cancel any existing animation before starting new one
+              if (animationFrameId.current !== null) {
+                cancelAnimationFrame(animationFrameId.current);
+              }
+              animationFrameId.current = requestAnimationFrame(animate);
               }
             }
           } catch (error) {
@@ -493,15 +584,21 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
       }
 
     } catch (error) {
-      console.error('❌ Error fetching cached route:', error);
+      console.error('❌ Error fetching route:', error);
     }
-  }, [coordinates, isMapReady, onRouteCalculated]);
+  }, [coordinates, isMapReady, onRouteCalculated, vehicleType, showTraffic, showAlternatives, selectedRouteIndex]);
 
   // Debounced route calculation
   useEffect(() => {
     if (!coordinates || !isMapReady) {
       // Remove route if no destinations
       if (map.current?.getSource('route')) {
+        // Cancel any running animation first
+        if (animationFrameId.current !== null) {
+          cancelAnimationFrame(animationFrameId.current);
+          animationFrameId.current = null;
+        }
+        
         if (map.current.getLayer('route')) {
           map.current.removeLayer('route');
         }
@@ -533,6 +630,63 @@ const DeliveryMapComponent = ({ pickup, dropoffs = [], className = '', onRouteCa
         </div>
       )}
       <div ref={mapContainer} className="w-full h-full" />
+      
+      {/* Route Alternatives Panel */}
+      {routeAlternatives.length > 1 && (
+        <div className="absolute top-4 right-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-3 max-w-xs z-10">
+          <h3 className="text-sm font-semibold mb-2 text-foreground">Route Options</h3>
+          <div className="space-y-2">
+            {routeAlternatives.map((route, index) => {
+              const distanceKm = (route.distance / 1000).toFixed(1);
+              const durationMin = Math.round(route.duration / 60);
+              const isActive = index === activeRouteIndex;
+              
+              return (
+                <button
+                  key={index}
+                  onClick={() => {
+                    setActiveRouteIndex(index);
+                    // Trigger route recalculation with new index
+                    if (coordinates) {
+                      fetchOptimizedRoute();
+                    }
+                  }}
+                  className={`w-full text-left p-2.5 rounded-md transition-all ${
+                    isActive 
+                      ? 'bg-primary text-primary-foreground shadow-sm' 
+                      : 'bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">
+                      {index === 0 ? 'Fastest' : index === 1 ? 'Alternate' : `Route ${index + 1}`}
+                    </span>
+                    {isActive && (
+                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-3 text-xs">
+                    <span className="flex items-center gap-1">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      {durationMin} min
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                      </svg>
+                      {distanceKm} km
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -255,12 +255,10 @@ export default function TrackingPage() {
         .in('status', [
           'driver_assigned',
           'going_to_pickup',
-          'arrived_at_pickup',
           'pickup_arrived',
-          'picked_up',
-          'going_to_dropoff',
-          'arrived_at_dropoff',
-          'dropoff_arrived'
+          'package_collected',
+          'in_transit',
+          'at_destination'
         ])
         .not('driver_id', 'is', null)
         .order('created_at', { ascending: false });

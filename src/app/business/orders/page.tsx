@@ -35,6 +35,7 @@ import {
 import { DeliveryMap } from '@/components/delivery-map';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
+import { reverseGeocode, isValidCoordinates } from '@/lib/geocoding-utils';
 import {
   Package,
   MapPin,
@@ -108,6 +109,10 @@ export default function OrdersPage() {
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [routeDistance, setRouteDistance] = useState<number>(0);
   const [routeDuration, setRouteDuration] = useState<number>(0);
+  
+  // Geocoding loading states
+  const [isGeocodingPickup, setIsGeocodingPickup] = useState(false);
+  const [geocodingDropoffIndex, setGeocodingDropoffIndex] = useState<number | null>(null);
   
   // Package details state
   const [packageDetails, setPackageDetails] = useState({
@@ -376,6 +381,58 @@ export default function OrdersPage() {
     // Pricing will be calculated in dispatch page based on vehicle selection
   }, []);
 
+  // Handle pickup marker drag
+  const handlePickupDragEnd = useCallback(async (lat: number, lng: number) => {
+    if (!isValidCoordinates(lat, lng)) {
+      console.error('❌ Invalid coordinates:', { lat, lng });
+      return;
+    }
+
+    console.log('🎯 Pickup dragged to:', { lat, lng });
+    setIsGeocodingPickup(true);
+
+    try {
+      const address = await reverseGeocode(lat, lng);
+      setPickupLocation(prev => ({
+        ...prev,
+        lat,
+        lng,
+        address,
+      }));
+    } catch (error) {
+      console.error('❌ Failed to geocode pickup location:', error);
+    } finally {
+      setIsGeocodingPickup(false);
+    }
+  }, []);
+
+  // Handle dropoff marker drag
+  const handleDropoffDragEnd = useCallback(async (index: number, lat: number, lng: number) => {
+    if (!isValidCoordinates(lat, lng)) {
+      console.error('❌ Invalid coordinates:', { lat, lng });
+      return;
+    }
+
+    console.log(`🎯 Dropoff #${index + 1} dragged to:`, { lat, lng });
+    setGeocodingDropoffIndex(index);
+
+    try {
+      const address = await reverseGeocode(lat, lng);
+      const updatedStops = [...dropoffStops];
+      updatedStops[index] = {
+        ...updatedStops[index],
+        lat,
+        lng,
+        address,
+      };
+      setDropoffStops(updatedStops);
+    } catch (error) {
+      console.error(`❌ Failed to geocode dropoff #${index + 1}:`, error);
+    } finally {
+      setGeocodingDropoffIndex(null);
+    }
+  }, [dropoffStops]);
+
   // Trigger map resize when sidebar state changes
   React.useEffect(() => {
     // Small delay to ensure CSS transition completes before resize
@@ -420,7 +477,7 @@ export default function OrdersPage() {
       {/* Load Google Maps API */}
       <GoogleMapsLoader />
       
-      <div className="flex h-screen w-screen fixed inset-0 overflow-hidden">
+      <div className="flex h-[calc(100vh-4rem)] w-screen fixed top-16 left-0 right-0 bottom-0 overflow-hidden">
         {/* Sidebar - Order Creation Form */}
       <div 
         className={`${
@@ -464,7 +521,7 @@ export default function OrdersPage() {
                 <div className="space-y-3 pl-10">
                   <div>
                     <Label htmlFor="pickup-address">Address</Label>
-                    <div className="mt-1.5">
+                    <div className="mt-1.5 relative">
                       <GooglePlacesAutocomplete
                         id="pickup-address"
                         value={pickupLocation.address}
@@ -478,7 +535,13 @@ export default function OrdersPage() {
                           });
                         }}
                         placeholder="Search for pickup location..."
+                        disabled={isGeocodingPickup}
                       />
+                      {isGeocodingPickup && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -552,7 +615,7 @@ export default function OrdersPage() {
 
                     <div>
                       <Label htmlFor={`dropoff-address-${stop.id}`}>Address</Label>
-                      <div className="mt-1.5">
+                      <div className="mt-1.5 relative">
                         <GooglePlacesAutocomplete
                           id={`dropoff-address-${stop.id}`}
                           value={stop.address}
@@ -574,7 +637,13 @@ export default function OrdersPage() {
                             setDropoffStops(updatedStops);
                           }}
                           placeholder="Search for dropoff location..."
+                          disabled={geocodingDropoffIndex === index}
                         />
+                        {geocodingDropoffIndex === index && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -999,6 +1068,9 @@ export default function OrdersPage() {
           dropoffs={demoDropoffs}
           className="absolute inset-0 w-full h-full"
           onRouteCalculated={handleRouteCalculated}
+          onPickupDragEnd={handlePickupDragEnd}
+          onDropoffDragEnd={handleDropoffDragEnd}
+          showAlternatives={true}
         />
         
         {/* Floating Controls on Map */}

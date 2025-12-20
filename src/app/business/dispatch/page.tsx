@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { pairDriver } from '@/lib/supabase/edge-functions';
 import { useUserContext } from '@/lib/supabase/user-context';
+import { useDebounce } from '@/hooks/useDebounce';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -69,6 +70,10 @@ import {
   DollarSign,
   Building2,
   Store,
+  Upload,
+  FileSpreadsheet,
+  Download,
+  Link as LinkIcon,
 } from 'lucide-react';
 
 interface Delivery {
@@ -142,11 +147,15 @@ export default function DispatchPage() {
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [editFormData, setEditFormData] = useState<Partial<Delivery>>({});
   const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignmentMode, setAssignmentMode] = useState<'auto' | 'manual'>('auto');
   const [selectedDriver, setSelectedDriver] = useState<string>('');
   const [assigning, setAssigning] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const itemsPerPage = 50;
   
   // Fleet vs Marketplace
   const [driverSource, setDriverSource] = useState<'fleet' | 'marketplace'>('fleet');
@@ -161,6 +170,14 @@ export default function DispatchPage() {
   // Payment (for marketplace only)
   const [paymentBy, setPaymentBy] = useState<'sender' | 'recipient'>('sender');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'creditCard' | 'debitCard' | 'maya'>('cash');
+
+  // CSV Import state
+  const [showCsvImportModal, setShowCsvImportModal] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvData, setCsvData] = useState<any[]>([]);
+  const [csvErrors, setCsvErrors] = useState<string[]>([]);
+  const [isProcessingCsv, setIsProcessingCsv] = useState(false);
+  const [csvImportSuccess, setCsvImportSuccess] = useState(0);
 
   useEffect(() => {
     if (!userLoading && businessId) {
@@ -180,8 +197,23 @@ export default function DispatchPage() {
           (payload) => {
             console.log('🔄 Deliveries real-time update:', payload);
             setRealtimeUpdates(prev => prev + 1);
-            // Refetch data when deliveries change
-            fetchData();
+            
+            // Update local state based on event type
+            if (payload.eventType === 'INSERT') {
+              // Only add to current page if we're on page 1 (newest deliveries)
+              if (currentPage === 1) {
+                setDeliveries(prev => [payload.new as Delivery, ...prev].slice(0, itemsPerPage));
+              }
+              // Update total count
+              setTotalCount(prev => prev + 1);
+            } else if (payload.eventType === 'UPDATE') {
+              setDeliveries(prev =>
+                prev.map(d => d.id === payload.new.id ? { ...d, ...payload.new } as Delivery : d)
+              );
+            } else if (payload.eventType === 'DELETE') {
+              setDeliveries(prev => prev.filter(d => d.id !== payload.old.id));
+              setTotalCount(prev => Math.max(0, prev - 1));
+            }
           }
         )
         .subscribe();
@@ -258,7 +290,7 @@ export default function DispatchPage() {
         supabase.removeChannel(driversChannel);
       };
     }
-  }, [userLoading, businessId]);
+  }, [userLoading, businessId, currentPage]);
 
   const fetchData = async () => {
     try {
@@ -270,25 +302,24 @@ export default function DispatchPage() {
         return;
       }
 
-      // Fetch deliveries (pending and in-progress)
-      // Include all active delivery statuses so they don't disappear when driver updates status
+      // Fetch total count for pagination
+      const { count } = await supabase
+        .from('deliveries')
+        .select('*', { count: 'exact', head: true })
+        .eq('business_id', businessId);
+      
+      setTotalCount(count || 0);
+
+      // Fetch deliveries with pagination (50 per page)
+      const from = (currentPage - 1) * itemsPerPage;
+      const to = from + itemsPerPage - 1;
+      
       const { data: deliveriesData, error: deliveriesError } = await supabase
         .from('deliveries')
         .select('*')
         .eq('business_id', businessId)
-        .in('status', [
-          'pending',
-          'driver_offered',
-          'driver_assigned',
-          'going_to_pickup',
-          'arrived_at_pickup',
-          'pickup_arrived',
-          'picked_up',
-          'going_to_dropoff',
-          'arrived_at_dropoff',
-          'dropoff_arrived'
-        ])
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .range(from, to);
 
       if (deliveriesError) {
         console.error('❌ Error fetching deliveries:', deliveriesError);
@@ -649,30 +680,42 @@ export default function DispatchPage() {
     if (!confirm('Are you sure you want to cancel this delivery?')) return;
 
     try {
-      await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            status: 'cancelled',
-            updated_at: new Date().toISOString(),
-          }),
-        }
+      console.log('🔄 Attempting to cancel delivery:', id);
+      
+      const { data, error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'cancelled',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select();
+
+      if (error) {
+        console.error('❌ Supabase error:', error);
+        throw error;
+      }
+
+      console.log('✅ Delivery cancelled successfully:', data);
+
+      // Update local state immediately instead of refetching
+      setDeliveries(prevDeliveries =>
+        prevDeliveries.map(d =>
+          d.id === id
+            ? { ...d, status: 'cancelled', updated_at: new Date().toISOString() }
+            : d
+        )
       );
 
-      fetchData();
       if (selectedDeliveryForView?.id === id) {
         setShowDetailsPanel(false);
         setSelectedDeliveryForView(null);
       }
+      
+      alert('Delivery cancelled successfully');
     } catch (error) {
       console.error('❌ Error cancelling delivery:', error);
-      alert('Failed to cancel delivery');
+      alert('Failed to cancel delivery: ' + (error as any).message);
     }
   };
 
@@ -725,6 +768,285 @@ export default function DispatchPage() {
     }
   };
 
+  // CSV Import Functions
+  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type === 'text/csv') {
+      setCsvFile(file);
+      setCsvErrors([]);
+    } else {
+      setCsvErrors(['Please select a valid CSV file']);
+    }
+  };
+
+  const parseCsvFile = async () => {
+    if (!csvFile) return;
+
+    setIsProcessingCsv(true);
+    setCsvErrors([]);
+    
+    try {
+      const text = await csvFile.text();
+      const lines = text.split('\n').filter(line => line.trim());
+      
+      if (lines.length < 2) {
+        setCsvErrors(['CSV file is empty or has no data rows']);
+        setIsProcessingCsv(false);
+        return;
+      }
+
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const requiredHeaders = ['pickup_address', 'dropoff_address', 'contact_name', 'contact_phone'];
+      const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
+      
+      if (missingHeaders.length > 0) {
+        setCsvErrors([`Missing required columns: ${missingHeaders.join(', ')}`]);
+        setIsProcessingCsv(false);
+        return;
+      }
+
+      const rowsData = [];
+      const errors: string[] = [];
+
+      // Parse all rows first
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',').map(v => v.trim());
+        const row: any = {};
+        
+        headers.forEach((header, index) => {
+          row[header] = values[index] || '';
+        });
+
+        if (!row.pickup_address || !row.dropoff_address || !row.contact_name || !row.contact_phone) {
+          errors.push(`Row ${i}: Missing required fields`);
+          continue;
+        }
+
+        if (!/^\d{10,}$/.test(row.contact_phone.replace(/[\s\-\(\)]/g, ''))) {
+          errors.push(`Row ${i}: Invalid phone number format`);
+          continue;
+        }
+
+        rowsData.push({
+          rowNumber: i,
+          orderGroup: row.order_group || '',
+          pickupAddress: row.pickup_address,
+          dropoffAddress: row.dropoff_address,
+          contactName: row.contact_name,
+          contactPhone: row.contact_phone,
+          instructions: row.instructions || '',
+          packageDescription: row.package_description || '',
+          packageWeight: parseFloat(row.package_weight) || 0,
+          packageValue: parseFloat(row.package_value) || 0,
+        });
+      }
+
+      // Group rows by order_group
+      const groupedOrders: any = {};
+      const singleOrders: any[] = [];
+
+      rowsData.forEach((row) => {
+        if (!row.orderGroup) {
+          // Single delivery
+          singleOrders.push(row);
+        } else {
+          // Multi-stop delivery
+          if (!groupedOrders[row.orderGroup]) {
+            groupedOrders[row.orderGroup] = [];
+          }
+          groupedOrders[row.orderGroup].push(row);
+        }
+      });
+
+      // Validate multi-stop groups have same pickup
+      Object.entries(groupedOrders).forEach(([groupId, stops]: [string, any]) => {
+        const pickups = new Set(stops.map((s: any) => s.pickupAddress));
+        if (pickups.size > 1) {
+          const rowNumbers = stops.map((s: any) => s.rowNumber).join(', ');
+          errors.push(`Group "${groupId}" (rows ${rowNumbers}): All stops must have the same pickup address`);
+          // Remove this group from processing
+          delete groupedOrders[groupId];
+        }
+      });
+
+      // Build final parsed data with type info
+      const parsedData = [];
+
+      // Add single orders
+      singleOrders.forEach((order) => {
+        parsedData.push({
+          type: 'single',
+          pickupAddress: order.pickupAddress,
+          dropoffAddress: order.dropoffAddress,
+          contactName: order.contactName,
+          contactPhone: order.contactPhone,
+          instructions: order.instructions,
+          packageDescription: order.packageDescription,
+          packageWeight: order.packageWeight,
+          packageValue: order.packageValue,
+        });
+      });
+
+      // Add multi-stop orders
+      Object.entries(groupedOrders).forEach(([groupId, stops]: [string, any]) => {
+        const firstStop = stops[0];
+        parsedData.push({
+          type: 'multi',
+          orderGroup: groupId,
+          pickupAddress: firstStop.pickupAddress,
+          stops: stops.map((stop: any) => ({
+            dropoffAddress: stop.dropoffAddress,
+            contactName: stop.contactName,
+            contactPhone: stop.contactPhone,
+            instructions: stop.instructions,
+            packageDescription: stop.packageDescription,
+            packageWeight: stop.packageWeight,
+            packageValue: stop.packageValue,
+          })),
+        });
+      });
+
+      if (errors.length > 0) setCsvErrors(errors);
+      if (parsedData.length > 0) {
+        setCsvData(parsedData);
+      } else {
+        setCsvErrors(['No valid rows found in CSV file']);
+      }
+    } catch (error) {
+      console.error('Error parsing CSV:', error);
+      setCsvErrors(['Failed to parse CSV file. Please check the format.']);
+    } finally {
+      setIsProcessingCsv(false);
+    }
+  };
+
+  const importCsvOrders = async () => {
+    if (csvData.length === 0 || !businessId || !selectedVehicleType) {
+      setCsvErrors(['Please select a vehicle type and ensure data is valid']);
+      return;
+    }
+
+    setIsProcessingCsv(true);
+    let successCount = 0;
+    const errors: string[] = [];
+    
+    // Import bookDelivery function
+    const { bookDelivery } = await import('@/lib/supabase/edge-functions');
+
+    for (let i = 0; i < csvData.length; i++) {
+      const order = csvData[i];
+      
+      try {
+        if (order.type === 'single') {
+          // Single delivery
+          const deliveryData = {
+            business_id: businessId,
+            pickup_location: {
+              address: order.pickupAddress,
+              contact_name: order.contactName,
+              contact_phone: order.contactPhone,
+              instructions: order.instructions,
+            },
+            dropoff_location: {
+              address: order.dropoffAddress,
+              contact_name: order.contactName,
+              contact_phone: order.contactPhone,
+              instructions: order.instructions,
+            },
+            package_details: {
+              description: order.packageDescription,
+              weight: order.packageWeight,
+              value: order.packageValue,
+            },
+            vehicle_type_id: selectedVehicleType,
+            status: 'pending',
+          };
+
+          const result = await bookDelivery(deliveryData);
+          
+          if (result.success) {
+            successCount++;
+          } else {
+            errors.push(`Order ${i + 1}: ${result.error || 'Failed to create delivery'}`);
+          }
+        } else if (order.type === 'multi') {
+          // Multi-stop delivery
+          const firstStop = order.stops[0];
+          const deliveryData = {
+            business_id: businessId,
+            delivery_type: 'multi',
+            pickup_location: {
+              address: order.pickupAddress,
+              contact_name: firstStop.contactName,
+              contact_phone: firstStop.contactPhone,
+              instructions: firstStop.instructions,
+            },
+            dropoff_stops: order.stops.map((stop: any, idx: number) => ({
+              stop_number: idx + 1,
+              address: stop.dropoffAddress,
+              contact_name: stop.contactName,
+              contact_phone: stop.contactPhone,
+              instructions: stop.instructions,
+              package_details: {
+                description: stop.packageDescription,
+                weight: stop.packageWeight,
+                value: stop.packageValue,
+              },
+            })),
+            vehicle_type_id: selectedVehicleType,
+            status: 'pending',
+          };
+
+          const result = await bookDelivery(deliveryData);
+          
+          if (result.success) {
+            successCount++;
+          } else {
+            errors.push(`Group "${order.orderGroup}" (${order.stops.length} stops): ${result.error || 'Failed to create delivery'}`);
+          }
+        }
+      } catch (error: any) {
+        const label = order.type === 'multi' ? `Group "${order.orderGroup}"` : `Order ${i + 1}`;
+        errors.push(`${label}: ${error.message || 'Unknown error'}`);
+      }
+    }
+
+    setIsProcessingCsv(false);
+    setCsvImportSuccess(successCount);
+
+    if (errors.length > 0) setCsvErrors(errors);
+
+    if (successCount > 0) {
+      fetchData(); // Refresh deliveries list
+      setTimeout(() => {
+        setShowCsvImportModal(false);
+        setCsvFile(null);
+        setCsvData([]);
+        setCsvErrors([]);
+        setCsvImportSuccess(0);
+      }, 3000);
+    }
+  };
+
+  const downloadCsvTemplate = () => {
+    const template = [
+      'order_group,pickup_address,dropoff_address,contact_name,contact_phone,instructions,package_description,package_weight,package_value',
+      ',Makati City Metro Manila,BGC Taguig Metro Manila,John Doe,09171234567,Ring doorbell,Electronics,2.5,5000',
+      'GROUP001,Quezon City Metro Manila,Pasig City Metro Manila,Jane Smith,09181234567,Stop 1 - Call first,Documents,1.0,2000',
+      'GROUP001,Quezon City Metro Manila,Makati City Metro Manila,Bob Lee,09191234567,Stop 2 - Leave at desk,Parcels,1.5,3000',
+      'GROUP001,Quezon City Metro Manila,BGC Taguig Metro Manila,Alice Wong,09201234567,Stop 3 - Ring bell,Supplies,2.0,4000',
+      ',Ortigas Center Metro Manila,Manila City Metro Manila,Carlos Ray,09211234567,,Books,0.5,500',
+    ].join('\n');
+
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'orders_template.csv';
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: any; label: string; icon: any }> = {
       pending: {
@@ -742,6 +1064,41 @@ export default function DispatchPage() {
         label: 'Driver Assigned',
         icon: CheckCircle2,
       },
+      going_to_pickup: {
+        variant: 'default',
+        label: 'Going to Pickup',
+        icon: Truck,
+      },
+      pickup_arrived: {
+        variant: 'default',
+        label: 'At Pickup',
+        icon: MapPin,
+      },
+      package_collected: {
+        variant: 'default',
+        label: 'Package Collected',
+        icon: Package,
+      },
+      in_transit: {
+        variant: 'default',
+        label: 'In Transit',
+        icon: Truck,
+      },
+      at_destination: {
+        variant: 'default',
+        label: 'At Destination',
+        icon: MapPin,
+      },
+      delivered: {
+        variant: 'default',
+        label: 'Delivered',
+        icon: CheckCircle2,
+      },
+      cancelled: {
+        variant: 'destructive',
+        label: 'Cancelled',
+        icon: AlertCircle,
+      },
     };
 
     const config = variants[status] || variants.pending;
@@ -755,20 +1112,33 @@ export default function DispatchPage() {
     );
   };
 
-  const filteredDeliveries = deliveries.filter(delivery => {
-    const matchesSearch =
-      (delivery.tracking_number?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
-      (delivery.pickup_address?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
-      (delivery.dropoff_address?.toLowerCase() || '').includes(searchQuery.toLowerCase());
+  const filteredDeliveries = useMemo(() => {
+    return deliveries.filter(delivery => {
+      const matchesSearch =
+        (delivery.tracking_number?.toLowerCase() || '').includes(debouncedSearchQuery.toLowerCase()) ||
+        (delivery.pickup_address?.toLowerCase() || '').includes(debouncedSearchQuery.toLowerCase()) ||
+        (delivery.dropoff_address?.toLowerCase() || '').includes(debouncedSearchQuery.toLowerCase());
 
-    const matchesStatus = statusFilter === 'all' || delivery.status === statusFilter;
+      let matchesStatus = false;
+      if (statusFilter === 'all') {
+        matchesStatus = true;
+      } else if (statusFilter === 'in_transit') {
+        matchesStatus = ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(delivery.status);
+      } else if (statusFilter === 'delivered') {
+        matchesStatus = ['delivered', 'cancelled'].includes(delivery.status);
+      } else {
+        matchesStatus = delivery.status === statusFilter;
+      }
 
-    return matchesSearch && matchesStatus;
-  });
+      return matchesSearch && matchesStatus;
+    });
+  }, [deliveries, debouncedSearchQuery, statusFilter]);
 
   const pendingCount = deliveries.filter(d => d.status === 'pending').length;
   const offeredCount = deliveries.filter(d => d.status === 'driver_offered').length;
   const assignedCount = deliveries.filter(d => d.status === 'driver_assigned').length;
+  const inTransitCount = deliveries.filter(d => ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(d.status)).length;
+  const deliveredCount = deliveries.filter(d => ['delivered', 'cancelled'].includes(d.status)).length;
 
   if (loading || userLoading) {
     return (
@@ -800,6 +1170,10 @@ export default function DispatchPage() {
             <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
             Live Updates {realtimeUpdates > 0 && `(${realtimeUpdates})`}
           </div>
+          <Button variant="outline" onClick={() => setShowCsvImportModal(true)}>
+            <Upload className="h-4 w-4 mr-2" />
+            Import CSV
+          </Button>
           <Button onClick={() => router.push('/business/orders')}>
             <Package className="h-4 w-4 mr-2" />
             Create Delivery
@@ -907,10 +1281,12 @@ export default function DispatchPage() {
             </div>
             <Tabs value={statusFilter} onValueChange={setStatusFilter} className="w-auto">
               <TabsList>
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="pending">Pending</TabsTrigger>
-                <TabsTrigger value="driver_offered">Offered</TabsTrigger>
-                <TabsTrigger value="driver_assigned">Assigned</TabsTrigger>
+                <TabsTrigger value="all">All ({deliveries.length})</TabsTrigger>
+                <TabsTrigger value="pending">Pending ({pendingCount})</TabsTrigger>
+                <TabsTrigger value="driver_offered">Offered ({offeredCount})</TabsTrigger>
+                <TabsTrigger value="driver_assigned">Assigned ({assignedCount})</TabsTrigger>
+                <TabsTrigger value="in_transit">In Transit ({inTransitCount})</TabsTrigger>
+                <TabsTrigger value="delivered">Completed ({deliveredCount})</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -1017,6 +1393,15 @@ export default function DispatchPage() {
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
+                              const link = `${window.location.origin}/track/${delivery.tracking_number}`;
+                              navigator.clipboard.writeText(link);
+                            }}
+                          >
+                            <LinkIcon className="h-4 w-4 mr-2" />
+                            Copy Tracking Link
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
                               setSelectedDeliveries([delivery.id]);
                               handleAssign();
                             }}
@@ -1047,6 +1432,36 @@ export default function DispatchPage() {
               )}
             </TableBody>
           </Table>
+          
+          {/* Pagination Controls */}
+          {totalCount > itemsPerPage && (
+            <div className="flex items-center justify-between px-4 py-4 border-t">
+              <div className="text-sm text-muted-foreground">
+                Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalCount)} of {totalCount} deliveries
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                >
+                  Previous
+                </Button>
+                <div className="text-sm font-medium">
+                  Page {currentPage} of {Math.ceil(totalCount / itemsPerPage)}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(prev => Math.min(Math.ceil(totalCount / itemsPerPage), prev + 1))}
+                  disabled={currentPage >= Math.ceil(totalCount / itemsPerPage)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1567,6 +1982,187 @@ export default function DispatchPage() {
           </SheetFooter>
         </SheetContent>
       </Sheet>
+
+      {/* CSV Import Modal */}
+      <Dialog open={showCsvImportModal} onOpenChange={setShowCsvImportModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5" />
+              Import Orders from CSV
+            </DialogTitle>
+            <DialogDescription>
+              Upload a CSV file to bulk create delivery orders
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Download Template */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Need a template?</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Button variant="outline" size="sm" onClick={downloadCsvTemplate} className="w-full">
+                  <Download className="h-4 w-4 mr-2" />
+                  Download CSV Template
+                </Button>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Required columns: order_group (optional), pickup_address, dropoff_address, contact_name, contact_phone<br />
+                  <span className="text-xs italic">Leave order_group empty for single deliveries. Use same group ID for multi-stop orders.</span>
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* Vehicle Type Selection */}
+            <div className="space-y-2">
+              <Label>Select Vehicle Type for All Orders</Label>
+              <Select value={selectedVehicleType} onValueChange={setSelectedVehicleType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose vehicle type..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {vehicleTypes.map((vehicle) => (
+                    <SelectItem key={vehicle.id} value={vehicle.id}>
+                      {vehicle.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* File Upload */}
+            <div className="space-y-2">
+              <Label htmlFor="csv-file">Upload CSV File</Label>
+              <Input
+                id="csv-file"
+                type="file"
+                accept=".csv"
+                onChange={handleCsvFileChange}
+                disabled={isProcessingCsv}
+              />
+            </div>
+
+            {/* Parse Button */}
+            {csvFile && !csvData.length && (
+              <Button onClick={parseCsvFile} disabled={isProcessingCsv} className="w-full">
+                {isProcessingCsv ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Parsing CSV...
+                  </>
+                ) : (
+                  <>
+                    <FileSpreadsheet className="h-4 w-4 mr-2" />
+                    Parse CSV File
+                  </>
+                )}
+              </Button>
+            )}
+
+            {/* Parsed Data Preview */}
+            {csvData.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">Parsed Orders ({csvData.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="max-h-48 overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Pickup</TableHead>
+                          <TableHead>Dropoff</TableHead>
+                          <TableHead>Stops</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {csvData.slice(0, 10).map((order, idx) => (
+                          <TableRow key={idx}>
+                            <TableCell className="text-xs">
+                              <Badge variant={order.type === 'multi' ? 'default' : 'outline'} className="text-xs">
+                                {order.type === 'multi' ? 'Multi' : 'Single'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-xs">{order.pickupAddress.substring(0, 25)}...</TableCell>
+                            <TableCell className="text-xs">
+                              {order.type === 'multi' ? `${order.stops.length} stops` : order.dropoffAddress.substring(0, 25) + '...'}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {order.type === 'multi' ? order.stops.length : '1'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    {csvData.length > 10 && (
+                      <p className="text-xs text-muted-foreground text-center mt-2">
+                        ...and {csvData.length - 10} more orders
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Errors */}
+            {csvErrors.length > 0 && (
+              <Card className="border-destructive">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm text-destructive flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4" />
+                    Errors ({csvErrors.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {csvErrors.slice(0, 10).map((error, idx) => (
+                      <p key={idx} className="text-xs text-destructive">{error}</p>
+                    ))}
+                    {csvErrors.length > 10 && (
+                      <p className="text-xs text-muted-foreground">...and {csvErrors.length - 10} more errors</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Success Message */}
+            {csvImportSuccess > 0 && (
+              <Card className="border-green-500 bg-green-50 dark:bg-green-950">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                    <CheckCircle2 className="h-5 w-5" />
+                    <p className="font-semibold">Successfully imported {csvImportSuccess} orders!</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCsvImportModal(false)} disabled={isProcessingCsv}>
+              Cancel
+            </Button>
+            {csvData.length > 0 && csvImportSuccess === 0 && (
+              <Button onClick={importCsvOrders} disabled={isProcessingCsv || !selectedVehicleType}>
+                {isProcessingCsv ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing {csvData.length} orders...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Import {csvData.length} Orders
+                  </>
+                )}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
