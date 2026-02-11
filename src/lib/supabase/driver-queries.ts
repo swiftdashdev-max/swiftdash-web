@@ -356,53 +356,6 @@ export const updateDriverOnlineStatus = async (userId: string, isOnline: boolean
   }
 }
 
-// Get online drivers with cursor-based pagination (better for real-time data)
-export const getOnlineDrivers = async (
-  lastTimestamp?: string,
-  limit: number = 100
-) => {
-  try {
-    const supabase = getSupabaseClient();
-    let query = supabase
-      .from('driver_profiles')
-      .select(`
-        id,
-        user_id,
-        vehicle_type_id,
-        is_online,
-        rating,
-        vehicle_model,
-        plate_number,
-        updated_at
-      `)
-      .eq('is_online', true)
-      .order('rating', { ascending: false })
-      .order('updated_at', { ascending: false })
-      .limit(limit);
-    
-    // Cursor-based pagination for real-time updates
-    if (lastTimestamp) {
-      query = query.gt('updated_at', lastTimestamp);
-    }
-    
-    const { data, error } = await query;
-    
-    if (error) throw error;
-    
-    return {
-      success: true,
-      data: data || [],
-      lastTimestamp: data && data.length > 0 ? data[data.length - 1].updated_at : null
-    };
-  } catch (error) {
-    console.error('Error fetching online drivers:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch online drivers'
-    };
-  }
-};
-
 // Get vehicle types for filters (public data, no admin needed)
 export const getVehicleTypes = async () => {
   try {
