@@ -375,105 +375,113 @@ export default function TrackingPage() {
   useEffect(() => {
     if (!mapContainer.current || !delivery || mapInstance) return;
 
-    console.log('Initializing Mapbox map...');
-    console.log('Mapbox token:', mapboxgl.accessToken ? 'Set ✓' : 'Missing ✗');
-    console.log('Delivery coordinates:', {
+    console.log('🗺️ Initializing Mapbox map...');
+    console.log('📍 Mapbox token:', mapboxgl.accessToken ? 'Set ✓' : 'Missing ✗');
+    console.log('📍 Container dimensions:', {
+      width: mapContainer.current.offsetWidth,
+      height: mapContainer.current.offsetHeight,
+    });
+    console.log('📍 Delivery coordinates:', {
       pickup: [delivery.pickup_longitude, delivery.pickup_latitude],
       delivery: [delivery.delivery_longitude, delivery.delivery_latitude]
     });
 
-    try {
-      const map = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/streets-v12', // Use default Mapbox style
-        center: [delivery.pickup_longitude, delivery.pickup_latitude],
-        zoom: 12,
-      });
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      try {
+        const map = new mapboxgl.Map({
+          container: mapContainer.current!,
+          style: 'mapbox://styles/mapbox/streets-v12', // Use default Mapbox style
+          center: [delivery.pickup_longitude, delivery.pickup_latitude],
+          zoom: 12,
+        });
 
-      map.on('error', (e) => {
-        console.error('Mapbox error:', e);
-        setError('Failed to load map. Please refresh the page.');
-      });
+        map.on('error', (e) => {
+          console.error('❌ Mapbox error:', e);
+          setError('Failed to load map. Please refresh the page.');
+        });
 
-      map.on('load', () => {
-        console.log('Mapbox map loaded successfully');
-        // Add pickup marker with pin styling (matching order page)
-      const pickupEl = document.createElement('div');
-      pickupEl.className = 'pickup-marker';
-      pickupEl.style.width = '40px';
-      pickupEl.style.height = '40px';
-      pickupEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2310b981\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%2310b981\'/%3E%3C/svg%3E")';
-      pickupEl.style.backgroundSize = 'contain';
-      pickupEl.style.cursor = 'pointer';
+        map.on('load', () => {
+          console.log('✅ Mapbox map loaded successfully');
+          // Add pickup marker with pin styling (matching order page)
+          const pickupEl = document.createElement('div');
+          pickupEl.className = 'pickup-marker';
+          pickupEl.style.width = '40px';
+          pickupEl.style.height = '40px';
+          pickupEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2310b981\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%2310b981\'/%3E%3C/svg%3E")';
+          pickupEl.style.backgroundSize = 'contain';
+          pickupEl.style.cursor = 'pointer';
 
-      const pickupMarker = new mapboxgl.Marker({ element: pickupEl, anchor: 'bottom' })
-        .setLngLat([delivery.pickup_longitude, delivery.pickup_latitude])
-        .setPopup(
-          new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Pickup</strong><br/>' + delivery.pickup_address)
-        )
-        .addTo(map);
-      pickupMarkerRef.current = pickupMarker;
+          const pickupMarker = new mapboxgl.Marker({ element: pickupEl, anchor: 'bottom' })
+            .setLngLat([delivery.pickup_longitude, delivery.pickup_latitude])
+            .setPopup(
+              new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Pickup</strong><br/>' + delivery.pickup_address)
+            )
+            .addTo(map);
+          pickupMarkerRef.current = pickupMarker;
 
-      // Add delivery marker with pin styling (matching order page)
-      const deliveryEl = document.createElement('div');
-      deliveryEl.className = 'delivery-marker';
-      deliveryEl.style.width = '40px';
-      deliveryEl.style.height = '40px';
-      deliveryEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23ef4444\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%23ef4444\'/%3E%3C/svg%3E")';
-      deliveryEl.style.backgroundSize = 'contain';
-      deliveryEl.style.cursor = 'pointer';
+          // Add delivery marker with pin styling (matching order page)
+          const deliveryEl = document.createElement('div');
+          deliveryEl.className = 'delivery-marker';
+          deliveryEl.style.width = '40px';
+          deliveryEl.style.height = '40px';
+          deliveryEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23ef4444\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%23ef4444\'/%3E%3C/svg%3E")';
+          deliveryEl.style.backgroundSize = 'contain';
+          deliveryEl.style.cursor = 'pointer';
 
-      const deliveryMarker = new mapboxgl.Marker({ element: deliveryEl, anchor: 'bottom' })
-        .setLngLat([delivery.delivery_longitude, delivery.delivery_latitude])
-        .setPopup(
-          new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Delivery</strong><br/>' + delivery.delivery_address)
-        )
-        .addTo(map);
-      deliveryMarkerRef.current = deliveryMarker;
+          const deliveryMarker = new mapboxgl.Marker({ element: deliveryEl, anchor: 'bottom' })
+            .setLngLat([delivery.delivery_longitude, delivery.delivery_latitude])
+            .setPopup(
+              new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Delivery</strong><br/>' + delivery.delivery_address)
+            )
+            .addTo(map);
+          deliveryMarkerRef.current = deliveryMarker;
 
-      // Fit bounds to show both markers
-      const bounds = new mapboxgl.LngLatBounds();
-      bounds.extend([delivery.pickup_longitude, delivery.pickup_latitude]);
-      bounds.extend([delivery.delivery_longitude, delivery.delivery_latitude]);
-      map.fitBounds(bounds, { padding: 50 });
-      
-      // Add route layer source (will be updated when driver location changes)
-      map.addSource('route', {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          properties: {},
-          geometry: {
-            type: 'LineString',
-            coordinates: []
-          }
-        }
-      });
+          // Fit bounds to show both markers
+          const bounds = new mapboxgl.LngLatBounds();
+          bounds.extend([delivery.pickup_longitude, delivery.pickup_latitude]);
+          bounds.extend([delivery.delivery_longitude, delivery.delivery_latitude]);
+          map.fitBounds(bounds, { padding: 50 });
+          
+          // Add route layer source (will be updated when driver location changes)
+          map.addSource('route', {
+            type: 'geojson',
+            data: {
+              type: 'Feature',
+              properties: {},
+              geometry: {
+                type: 'LineString',
+                coordinates: []
+              }
+            }
+          });
 
-      map.addLayer({
-        id: 'route',
-        type: 'line',
-        source: 'route',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round'
-        },
-        paint: {
-          'line-color': '#3b82f6',
-          'line-width': 6,
-          'line-opacity': 0.9,
-          'line-emissive-strength': 1.2
-        }
-      });
-    });
+          map.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#3b82f6',
+              'line-width': 6,
+              'line-opacity': 0.9,
+              'line-emissive-strength': 1.2
+            }
+          });
+        });
 
-      setMapInstance(map);
-    } catch (error) {
-      console.error('Failed to initialize map:', error);
-      setError('Failed to load map. Please check your internet connection.');
-    }
+        setMapInstance(map);
+      } catch (error) {
+        console.error('❌ Failed to initialize map:', error);
+        setError('Failed to load map. Please check your internet connection.');
+      }
+    }, 100); // Small delay to ensure DOM is ready
 
     return () => {
+      clearTimeout(timer);
       if (driverMarkerRef.current) driverMarkerRef.current.remove();
       if (pickupMarkerRef.current) pickupMarkerRef.current.remove();
       if (deliveryMarkerRef.current) deliveryMarkerRef.current.remove();
@@ -751,8 +759,12 @@ export default function TrackingPage() {
       {/* Main Content - Map Dominant Layout */}
       <div className="h-[calc(100vh-88px)] flex flex-col lg:flex-row">
         {/* Map Section - Takes full height on mobile, 2/3 on desktop */}
-        <div className="h-1/2 lg:h-full lg:w-2/3 relative">
-          <div ref={mapContainer} className="w-full h-full" />
+        <div className="h-1/2 lg:h-full lg:w-2/3 relative bg-gray-100">
+          <div 
+            ref={mapContainer} 
+            className="w-full h-full"
+            style={{ minHeight: '400px' }}
+          />
           
           {/* Floating Status Badge */}
           <div className="absolute top-4 left-4 z-10">
