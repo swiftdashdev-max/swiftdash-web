@@ -29,6 +29,11 @@ import {
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
+// Validate Mapbox token
+if (!mapboxgl.accessToken) {
+  console.error('NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN is not set');
+}
+
 interface DeliveryData {
   id: string;
   tracking_number: string;
@@ -370,19 +375,29 @@ export default function TrackingPage() {
   useEffect(() => {
     if (!mapContainer.current || !delivery || mapInstance) return;
 
-    const map = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex',
-      center: [delivery.pickup_longitude, delivery.pickup_latitude],
-      zoom: 12,
+    console.log('Initializing Mapbox map...');
+    console.log('Mapbox token:', mapboxgl.accessToken ? 'Set ✓' : 'Missing ✗');
+    console.log('Delivery coordinates:', {
+      pickup: [delivery.pickup_longitude, delivery.pickup_latitude],
+      delivery: [delivery.delivery_longitude, delivery.delivery_latitude]
     });
 
-    map.on('error', (e) => {
-      console.error('Mapbox error:', e);
-    });
+    try {
+      const map = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/streets-v12', // Use default Mapbox style
+        center: [delivery.pickup_longitude, delivery.pickup_latitude],
+        zoom: 12,
+      });
 
-    map.on('load', () => {
-      // Add pickup marker with pin styling (matching order page)
+      map.on('error', (e) => {
+        console.error('Mapbox error:', e);
+        setError('Failed to load map. Please refresh the page.');
+      });
+
+      map.on('load', () => {
+        console.log('Mapbox map loaded successfully');
+        // Add pickup marker with pin styling (matching order page)
       const pickupEl = document.createElement('div');
       pickupEl.className = 'pickup-marker';
       pickupEl.style.width = '40px';
@@ -452,13 +467,17 @@ export default function TrackingPage() {
       });
     });
 
-    setMapInstance(map);
+      setMapInstance(map);
+    } catch (error) {
+      console.error('Failed to initialize map:', error);
+      setError('Failed to load map. Please check your internet connection.');
+    }
 
     return () => {
       if (driverMarkerRef.current) driverMarkerRef.current.remove();
       if (pickupMarkerRef.current) pickupMarkerRef.current.remove();
       if (deliveryMarkerRef.current) deliveryMarkerRef.current.remove();
-      map.remove();
+      if (mapInstance) mapInstance.remove();
     };
   }, [delivery, mapInstance]);
 

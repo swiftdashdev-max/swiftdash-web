@@ -641,6 +641,7 @@ export default function DriverVerificationPage() {
                                     src={previewFiles[doc.id][index]}
                                     alt={`${doc.title} ${index + 1}`}
                                     className="w-full h-full object-cover"
+                                    loading="lazy"
                                   />
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center">

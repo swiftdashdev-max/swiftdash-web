@@ -3,6 +3,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Loader2 } from 'lucide-react';
+import { clear } from 'console';
 
 /**
  * Google Places Autocomplete Component

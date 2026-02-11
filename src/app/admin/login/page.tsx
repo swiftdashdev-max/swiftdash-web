@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { createClient } from '@/lib/supabase/client';
 
 export default function AdminLogin() {
   const [email, setEmail] = useState('');
@@ -16,6 +17,7 @@ export default function AdminLogin() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const router = useRouter();
+  const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,15 +25,42 @@ export default function AdminLogin() {
     setError('');
 
     try {
-      // TODO: Implement actual authentication with Supabase
-      // For now, just simulate login
-      if (email === 'admin@swiftdash.com' && password === 'admin123') {
-        router.push('/admin/dashboard');
-      } else {
-        setError('Invalid email or password');
+      // Sign in with Supabase
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (authError) {
+        throw new Error(authError.message);
       }
-    } catch (err) {
-      setError('An error occurred during login');
+
+      if (!authData.user) {
+        throw new Error('Login failed - no user returned');
+      }
+
+      // Check if user is an admin
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('user_type')
+        .eq('id', authData.user.id)
+        .single();
+
+      if (profileError) {
+        throw new Error('Failed to verify admin status');
+      }
+
+      if (profile.user_type !== 'admin') {
+        // Sign out non-admin users
+        await supabase.auth.signOut();
+        throw new Error('Access denied. This portal is for administrators only.');
+      }
+
+      // Success - redirect to admin dashboard
+      router.push('/admin/dashboard');
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setError(err.message || 'An error occurred during login');
     } finally {
       setLoading(false);
     }
@@ -104,27 +133,23 @@ export default function AdminLogin() {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
 
-              <div className="text-center">
+              <div className="text-center pt-4">
                 <Link 
-                  href="/admin/forgot-password" 
+                  href="/admin/register" 
                   className="text-sm text-blue-600 hover:text-blue-500"
                 >
-                  Forgot your password?
+                  Need an admin account? Register here
                 </Link>
               </div>
             </form>
           </CardContent>
         </Card>
 
-        {/* Demo Credentials */}
-        <Card className="mt-4 rounded-2xl border border-yellow-200 bg-yellow-50">
+        {/* Info Card */}
+        <Card className="mt-4 rounded-2xl border border-blue-200 bg-blue-50">
           <CardContent className="pt-4">
-            <p className="text-sm text-yellow-800 mb-2">
-              <strong>Demo Credentials:</strong>
-            </p>
-            <p className="text-sm text-yellow-800">
-              Email: admin@swiftdash.com<br />
-              Password: admin123
+            <p className="text-sm text-blue-800">
+              <strong>ℹ️ Note:</strong> Use your registered admin credentials or <Link href="/admin/register" className="underline font-semibold">create a new admin account</Link>.
             </p>
           </CardContent>
         </Card>

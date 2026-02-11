@@ -83,7 +83,7 @@ export const ensureStorageBuckets = async () => {
   }
 };
 
-// Upload file to specific bucket
+// Upload file to specific bucket (using driver client for authenticated uploads)
 export const uploadDriverDocument = async (
   file: File,
   bucket: string,
@@ -91,8 +91,8 @@ export const uploadDriverDocument = async (
   documentType: string
 ) => {
   try {
-    // Use admin client with service role key for file uploads
-    const supabase = getStorageAdminClient()
+    // Use driver client for authenticated uploads (no service role needed)
+    const supabase = getDriverSupabaseClient()
     const fileExt = file.name.split('.').pop();
     const fileName = `${userId}/${documentType}_${Date.now()}.${fileExt}`;
     

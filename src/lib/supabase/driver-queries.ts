@@ -2,6 +2,34 @@ import { createClient } from './client'
 import { createDriverClient } from './driver-client'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
+// Simple in-memory cache for frequently accessed data
+const queryCache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_TTL = 30000; // 30 seconds
+
+function getCachedData<T>(key: string): T | null {
+  const cached = queryCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log(`📦 Cache hit: ${key}`);
+    return cached.data as T;
+  }
+  return null;
+}
+
+function setCachedData(key: string, data: any): void {
+  queryCache.set(key, { data, timestamp: Date.now() });
+  // Clean old entries to prevent memory leaks
+  if (queryCache.size > 50) {
+    const oldestKey = Array.from(queryCache.keys())[0];
+    queryCache.delete(oldestKey);
+  }
+}
+
+// Export cache control for external use
+export function clearDriverCache(): void {
+  queryCache.clear();
+  console.log('🗑️ Driver cache cleared');
+}
+
 // Create authenticated client that uses user session
 const getSupabaseClient = () => createClient()
 
@@ -128,6 +156,7 @@ export const searchDrivers = async (
   limit: number = 50
 ): Promise<PaginatedDriverResponse> => {
   try {
+    const startTime = Date.now();
     const supabase = getSupabaseClient()
     // First, let's get drivers from user_profiles table where user_type = 'driver'
     let query = supabase
@@ -222,11 +251,20 @@ export const searchDrivers = async (
       vehicle_type: undefined
     }))
 
-    return {
+    const loadTime = Date.now() - startTime;
+    const totalPages = Math.ceil((count || 0) / limit);
+    console.log(`⚡ Driver Query: Page ${page}/${totalPages} - ${transformedDrivers.length}/${count || 0} drivers in ${loadTime}ms`);
+    
+    const result = {
       drivers: transformedDrivers,
       totalCount: count || 0,
       hasMore: (page * limit) < (count || 0)
-    }
+    };
+    
+    // Cache the result
+    setCachedData(cacheKey, result);
+    
+    return result
 
   } catch (error) {
     console.error('Error searching drivers:', error)
@@ -237,6 +275,53 @@ export const searchDrivers = async (
     }
   }
 }
+
+// Get online drivers with cursor-based pagination (better for real-time data)
+export const getOnlineDrivers = async (
+  lastTimestamp?: string,
+  limit: number = 100
+) => {
+  try {
+    const supabase = getSupabaseClient();
+    let query = supabase
+      .from('driver_profiles')
+      .select(`
+        id,
+        user_id,
+        vehicle_type_id,
+        is_online,
+        rating,
+        vehicle_model,
+        plate_number,
+        updated_at
+      `)
+      .eq('is_online', true)
+      .order('rating', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+    
+    // Cursor-based pagination for real-time updates
+    if (lastTimestamp) {
+      query = query.gt('updated_at', lastTimestamp);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) throw error;
+    
+    return {
+      success: true,
+      data: data || [],
+      lastTimestamp: data && data.length > 0 ? data[data.length - 1].updated_at : null
+    };
+  } catch (error) {
+    console.error('Error fetching online drivers:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch online drivers'
+    };
+  }
+};
 
 // Update driver verification status (updates user status)
 export const updateDriverVerification = async (userId: string, isVerified: boolean) => {
@@ -271,12 +356,59 @@ export const updateDriverOnlineStatus = async (userId: string, isOnline: boolean
   }
 }
 
-// Get vehicle types for filters (using service role for public data)
+// Get online drivers with cursor-based pagination (better for real-time data)
+export const getOnlineDrivers = async (
+  lastTimestamp?: string,
+  limit: number = 100
+) => {
+  try {
+    const supabase = getSupabaseClient();
+    let query = supabase
+      .from('driver_profiles')
+      .select(`
+        id,
+        user_id,
+        vehicle_type_id,
+        is_online,
+        rating,
+        vehicle_model,
+        plate_number,
+        updated_at
+      `)
+      .eq('is_online', true)
+      .order('rating', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+    
+    // Cursor-based pagination for real-time updates
+    if (lastTimestamp) {
+      query = query.gt('updated_at', lastTimestamp);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) throw error;
+    
+    return {
+      success: true,
+      data: data || [],
+      lastTimestamp: data && data.length > 0 ? data[data.length - 1].updated_at : null
+    };
+  } catch (error) {
+    console.error('Error fetching online drivers:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch online drivers'
+    };
+  }
+};
+
+// Get vehicle types for filters (public data, no admin needed)
 export const getVehicleTypes = async () => {
   try {
     console.log('Fetching vehicle types...')
-    // Use admin client with service role key for fetching vehicle types
-    const supabase = getAdminSupabaseClient()
+    // Use regular client since vehicle_types is public data
+    const supabase = createClient()
     const { data, error } = await supabase
       .from('vehicle_types')
       .select('*')

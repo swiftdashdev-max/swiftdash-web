@@ -325,10 +325,12 @@ export default function DispatchPage() {
         console.error('❌ Error fetching deliveries:', deliveriesError);
       } else {
         setDeliveries(deliveriesData || []);
-        console.log('📦 Deliveries loaded:', deliveriesData);
+        const totalPages = Math.ceil((count || 0) / itemsPerPage);
+        console.log(`📦 Deliveries: Page ${currentPage}/${totalPages} (${deliveriesData?.length || 0}/${count || 0} total)`);
       }
 
-      // Fetch available drivers - just driver_profiles data for now
+      // Fetch available drivers - limited to top 100 by rating for performance
+      const startTime = Date.now();
       const { data: driversData, error: driversError } = await supabase
         .from('driver_profiles')
         .select(`
@@ -341,7 +343,12 @@ export default function DispatchPage() {
           employment_type,
           managed_by_business_id
         `)
-        .eq('is_online', true);
+        .eq('is_online', true)
+        .order('rating', { ascending: false })
+        .limit(100);
+      
+      const driverLoadTime = Date.now() - startTime;
+      console.log(`⚡ Loaded ${driversData?.length || 0} drivers in ${driverLoadTime}ms`);
 
       if (driversError) {
         console.error('❌ Error fetching drivers:', driversError);

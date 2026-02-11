@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { memo } from 'react'
 import { MoreHorizontal, Eye, CheckCircle, X, Star, MapPin, Phone, Truck, Calendar, DollarSign } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -312,3 +312,6 @@ export function DriversTable({
     </div>
   )
 }
+
+// Export memoized version for performance
+export default memo(DriversTable)

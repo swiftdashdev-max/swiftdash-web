@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, memo } from 'react'
 import { Search, Filter, Download, Star, Truck, CheckCircle, Clock } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -295,3 +295,6 @@ export function DriversSearch({
     </div>
   )
 }
+
+// Export memoized version for performance
+export default memo(DriversSearch)
