@@ -2,6 +2,7 @@ import type {Metadata} from 'next';
 import {Toaster} from '@/components/ui/toaster';
 import { ThemeProvider } from '@/components/theme-provider';
 import { PerformanceInitializer } from '@/components/performance-initializer';
+import { LoadingScreenProvider } from '@/components/loading-screen-provider';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -35,6 +36,7 @@ export default function RootLayout({
         />
       </head>
       <body className="font-body antialiased">
+        <LoadingScreenProvider />
         <PerformanceInitializer />
         <ThemeProvider
           defaultTheme="light"
