@@ -3,8 +3,9 @@
 // Triggers on delivery status changes to send SMS and email notifications
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import Twilio from "https://esm.sh/twilio@5.3.4";
 import { Resend } from "https://esm.sh/resend@4.0.0";
+
+const SEMAPHORE_API_URL = 'https://api.semaphore.co/api/v4/messages';
 
 // CORS headers
 const corsHeaders = {
@@ -24,9 +25,7 @@ serve(async (req) => {
     // Get environment variables
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const twilioAccountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
-    const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN');
-    const twilioPhoneNumber = Deno.env.get('TWILIO_PHONE_NUMBER');
+    const smsApiKey = Deno.env.get('SMS_API_KEY');
     const resendApiKey = Deno.env.get('RESEND_API_KEY');
 
     // Create Supabase client
@@ -67,7 +66,7 @@ serve(async (req) => {
 
     const business = delivery.business_accounts;
     const businessName = business.business_name || 'SwiftDash';
-    const trackingUrl = `${Deno.env.get('APP_URL') || 'https://swiftdash.app'}/track/${delivery.tracking_number}`;
+    const trackingUrl = `${Deno.env.get('APP_URL') || 'https://swiftdashdms.com'}/track/${delivery.tracking_number}`;
 
     // Prepare notification recipients
     const smsRecipients = [];
@@ -110,9 +109,20 @@ serve(async (req) => {
       email: []
     };
 
-    // Send SMS notifications
-    if (twilioAccountSid && twilioAuthToken && twilioPhoneNumber && smsRecipients.length > 0) {
-      const twilioClient = Twilio(twilioAccountSid, twilioAuthToken);
+    // Send SMS notifications via Semaphore
+    if (smsApiKey && smsRecipients.length > 0) {
+      const businessSettings = business.settings || {};
+      const senderName = 'DELIVERY'; // Fixed registered Semaphore sender name
+
+      // Normalize Philippine phone number for Semaphore
+      const normalizePhone = (phone: string): string | null => {
+        if (!phone) return null;
+        let cleaned = phone.replace(/[\s\-\(\)]/g, '').trim();
+        if (cleaned.startsWith('+63')) cleaned = '0' + cleaned.slice(3);
+        else if (cleaned.startsWith('63') && cleaned.length === 12) cleaned = '0' + cleaned.slice(2);
+        if (/^09\d{9}$/.test(cleaned)) return cleaned;
+        return null;
+      };
 
       for (const recipient of smsRecipients) {
         try {
@@ -123,16 +133,31 @@ serve(async (req) => {
             message = `${businessName}: Your delivery has been completed! View details: ${trackingUrl}`;
           }
 
-          const result = await twilioClient.messages.create({
-            body: message,
-            from: twilioPhoneNumber,
-            to: recipient.phone
+          const normalized = normalizePhone(recipient.phone);
+          if (!normalized) {
+            console.warn(`⚠️ Invalid phone number: ${recipient.phone}`);
+            results.sms.push({ to: recipient.phone, status: 'failed', error: 'Invalid phone number' });
+            continue;
+          }
+
+          const response = await fetch(SEMAPHORE_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              apikey: smsApiKey,
+              number: normalized,
+              message: message,
+              sendername: senderName,
+            }),
           });
 
+          const smsResult = await response.json();
+          const messageId = Array.isArray(smsResult) ? smsResult[0]?.message_id : smsResult?.message_id;
+
           results.sms.push({
-            to: recipient.phone,
+            to: normalized,
             status: 'sent',
-            sid: result.sid
+            message_id: messageId
           });
         } catch (error) {
           console.error(`Failed to send SMS to ${recipient.phone}:`, error);
@@ -295,7 +320,7 @@ serve(async (req) => {
           }
 
           const result = await resend.emails.send({
-            from: `${businessName} <notifications@${Deno.env.get('RESEND_DOMAIN') || 'swiftdash.app'}>`,
+            from: `${businessName} <notifications@${Deno.env.get('RESEND_DOMAIN') || 'swiftdashdms.com'}>`,
             to: recipient.email,
             subject: subject,
             html: html

@@ -40,6 +40,7 @@ interface DeliveryMapProps {
   showTraffic?: boolean; // Whether to show traffic gradients
   showAlternatives?: boolean; // Whether to fetch route alternatives
   selectedRouteIndex?: number; // Which alternative route to display (0 = primary)
+  onRouteSelected?: (index: number, routeInfo: { distance: number; duration: number }) => void; // Callback when user selects an alternative
 }
 
 // Memoized marker creation functions
@@ -98,7 +99,8 @@ const DeliveryMapComponent = ({
   vehicleType,
   showTraffic = true,
   showAlternatives = false,
-  selectedRouteIndex = 0
+  selectedRouteIndex = 0,
+  onRouteSelected
 }: DeliveryMapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -369,8 +371,12 @@ const DeliveryMapComponent = ({
         return;
       }
 
+      // Store all alternatives in state
+      setRouteAlternatives(data.routes);
+
       // Use selected route or primary route
-      const route = data.routes[Math.min(selectedRouteIndex, data.routes.length - 1)];
+      const selectedIdx = Math.min(activeRouteIndex, data.routes.length - 1);
+      const route = data.routes[selectedIdx];
       const geometry = route.geometry;
 
       if (!geometry || !geometry.coordinates) {
@@ -378,16 +384,10 @@ const DeliveryMapComponent = ({
         return;
       }
 
-      // Extract congestion data if available (for logging only, no longer rendering)
+      // Extract congestion data
       const congestionData = route.legs?.[0]?.annotation?.congestion || [];
       const distanceData = route.legs?.[0]?.annotation?.distance || [];
       const hasTrafficData = congestionData.length > 0 && distanceData.length > 0;
-
-      console.log('🚦 Traffic data:', { 
-        hasTrafficData, 
-        congestionSegments: congestionData.length,
-        distanceSegments: distanceData.length 
-      });
 
       // Calculate distance and duration
       const distanceKm = parseFloat((route.distance / 1000).toFixed(2));
@@ -410,175 +410,170 @@ const DeliveryMapComponent = ({
         hasTrafficData,
       };
 
-      // Store alternatives in state for UI
-      if (data.routes.length > 1) {
-        setRouteAlternatives(data.routes);
-      } else {
-        setRouteAlternatives([]);
-      }
-
       if (onRouteCalculated) {
         onRouteCalculated(calculatedRoute);
       }
 
-      // Add route to map with traffic gradient
+      // Render routes on map
       if (map.current) {
-        console.log('🗺️ Adding route to map with traffic visualization');
-
-        // Wait for style to be ready
-        const addOrUpdateRoute = () => {
+        const renderRoutes = () => {
           if (!map.current) return;
           
           try {
-            // Add or update route source
-            if (!map.current.getSource('route')) {
-              console.log('➕ Adding new route source with lineMetrics');
-              
-              map.current.addSource('route', {
-                type: 'geojson',
-                data: {
-                  type: 'Feature',
-                  properties: {},
-                  geometry: geometry,
-                },
-                lineMetrics: true, // Required for line-gradient
-              });
+            // First, remove any existing alternative route layers/sources
+            for (let i = 0; i < 3; i++) {
+              const altId = `route-alt-${i}`;
+              if (map.current.getLayer(altId)) map.current.removeLayer(altId);
+              if (map.current.getSource(altId)) map.current.removeSource(altId);
+            }
+            // Remove primary layers
+            if (map.current.getLayer('route-arrows')) map.current.removeLayer('route-arrows');
+            if (map.current.getLayer('route')) map.current.removeLayer('route');
+            if (map.current.getSource('route')) map.current.removeSource('route');
 
-              // Add route line layer (simple, no traffic gradient)
-              map.current.addLayer({
-                id: 'route',
-                type: 'line',
-                source: 'route',
-                layout: {
-                  'line-join': 'round',
-                  'line-cap': 'round',
-                },
-                paint: {
-                  'line-color': '#3b82f6',
-                  'line-width': 6,
-                  'line-opacity': 0.9,
-                  'line-emissive-strength': 1.0,
-                  'line-trim-offset': [0, 0],
-                },
-              });
+            // Render alternative routes FIRST (behind the selected route)
+            if (data.routes.length > 1) {
+              data.routes.forEach((altRoute, idx) => {
+                if (idx === selectedIdx) return; // Skip the selected one
+                if (!altRoute.geometry?.coordinates) return;
 
-              // Animate the route drawing from start to finish
-              console.log('🎬 Animating route drawing...');
-              let progress = 0;
-              const animDuration = 1500; // 1.5 seconds animation
-              const startTime = performance.now();
-
-              const animate = (currentTime: number) => {
-                if (!map.current || !map.current.getLayer('route')) {
-                  animationFrameId.current = null;
-                  return;
-                }
-
-                const elapsed = currentTime - startTime;
-                progress = Math.min(elapsed / animDuration, 1);
-                const trimValue = Math.max(0, Math.min(1 - progress, 1)); // Clamp between 0 and 1
-
-                map.current.setPaintProperty('route', 'line-trim-offset', [0, trimValue]);
-
-                if (progress < 1) {
-                  animationFrameId.current = requestAnimationFrame(animate);
-                } else {
-                  console.log('✅ Route animation complete');
-                  if (map.current && map.current.getLayer('route')) {
-                    map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
-                  }
-                  animationFrameId.current = null;
-                }
-              };
-
-              // Cancel any existing animation before starting new one
-              if (animationFrameId.current !== null) {
-                cancelAnimationFrame(animationFrameId.current);
-              }
-              animationFrameId.current = requestAnimationFrame(animate);
-
-              // Add directional arrows
-              map.current.addLayer({
-                id: 'route-arrows',
-                type: 'symbol',
-                source: 'route',
-                layout: {
-                  'symbol-placement': 'line',
-                  'symbol-spacing': 80,
-                  'text-field': '▶',
-                  'text-size': 16,
-                  'text-keep-upright': false,
-                  'text-rotation-alignment': 'map',
-                },
-                paint: {
-                  'text-color': '#ffffff',
-                  'text-halo-color': '#3b82f6',
-                  'text-halo-width': 3,
-                },
-              });
-
-              console.log('✅ Route layers added to map');
-            } else {
-              // Update existing route
-              console.log('🔄 Updating existing route');
-              const source = map.current.getSource('route') as mapboxgl.GeoJSONSource;
-              if (source) {
-                source.setData({
-                  type: 'Feature',
-                  properties: {},
-                  geometry: geometry,
+                const altId = `route-alt-${idx}`;
+                map.current!.addSource(altId, {
+                  type: 'geojson',
+                  data: {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: altRoute.geometry,
+                  },
                 });
 
-                // Re-animate the updated route
-                console.log('🎬 Re-animating route');
-                let progress = 0;
-                const animDuration = 1500;
-                const startTime = performance.now();
+                map.current!.addLayer({
+                  id: altId,
+                  type: 'line',
+                  source: altId,
+                  layout: {
+                    'line-join': 'round',
+                    'line-cap': 'round',
+                  },
+                  paint: {
+                    'line-color': '#94a3b8', // slate-400, subtle gray
+                    'line-width': 4,
+                    'line-opacity': 0.5,
+                    'line-dasharray': [2, 2],
+                  },
+                });
 
-              const animate = (currentTime: number) => {
-                if (!map.current || !map.current.getLayer('route')) {
-                  animationFrameId.current = null;
-                  return;
-                }
-
-                const elapsed = currentTime - startTime;
-                progress = Math.min(elapsed / animDuration, 1);
-                const trimValue = Math.max(0, Math.min(1 - progress, 1));
-
-                map.current.setPaintProperty('route', 'line-trim-offset', [0, trimValue]);
-
-                if (progress < 1) {
-                  animationFrameId.current = requestAnimationFrame(animate);
-                } else {
-                  console.log('✅ Route animation complete');
-                  if (map.current && map.current.getLayer('route')) {
-                    map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
+                // Make alternative routes clickable
+                map.current!.on('click', altId, () => {
+                  setActiveRouteIndex(idx);
+                  const altDistKm = parseFloat((altRoute.distance / 1000).toFixed(2));
+                  const altDurMin = Math.round(altRoute.duration / 60);
+                  if (onRouteSelected) {
+                    onRouteSelected(idx, { distance: altDistKm, duration: altDurMin });
                   }
-                  animationFrameId.current = null;
-                }
-              };
+                });
 
-              // Cancel any existing animation before starting new one
-              if (animationFrameId.current !== null) {
-                cancelAnimationFrame(animationFrameId.current);
-              }
-              animationFrameId.current = requestAnimationFrame(animate);
-              }
+                // Cursor pointer on hover
+                map.current!.on('mouseenter', altId, () => {
+                  if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+                });
+                map.current!.on('mouseleave', altId, () => {
+                  if (map.current) map.current.getCanvas().style.cursor = '';
+                });
+              });
             }
+
+            // Now render the selected route on top
+            map.current.addSource('route', {
+              type: 'geojson',
+              data: {
+                type: 'Feature',
+                properties: {},
+                geometry: geometry,
+              },
+              lineMetrics: true,
+            });
+
+            map.current.addLayer({
+              id: 'route',
+              type: 'line',
+              source: 'route',
+              layout: {
+                'line-join': 'round',
+                'line-cap': 'round',
+              },
+              paint: {
+                'line-color': '#3b82f6',
+                'line-width': 6,
+                'line-opacity': 0.9,
+                'line-emissive-strength': 1.0,
+                'line-trim-offset': [0, 0],
+              },
+            });
+
+            // Animate the route drawing
+            let progress = 0;
+            const animDuration = 1500;
+            const startTime = performance.now();
+
+            const animate = (currentTime: number) => {
+              if (!map.current || !map.current.getLayer('route')) {
+                animationFrameId.current = null;
+                return;
+              }
+
+              const elapsed = currentTime - startTime;
+              progress = Math.min(elapsed / animDuration, 1);
+              const trimValue = Math.max(0, Math.min(1 - progress, 1));
+
+              map.current.setPaintProperty('route', 'line-trim-offset', [0, trimValue]);
+
+              if (progress < 1) {
+                animationFrameId.current = requestAnimationFrame(animate);
+              } else {
+                if (map.current && map.current.getLayer('route')) {
+                  map.current.setPaintProperty('route', 'line-trim-offset', [0, 0]);
+                }
+                animationFrameId.current = null;
+              }
+            };
+
+            if (animationFrameId.current !== null) {
+              cancelAnimationFrame(animationFrameId.current);
+            }
+            animationFrameId.current = requestAnimationFrame(animate);
+
+            // Add directional arrows
+            map.current.addLayer({
+              id: 'route-arrows',
+              type: 'symbol',
+              source: 'route',
+              layout: {
+                'symbol-placement': 'line',
+                'symbol-spacing': 80,
+                'text-field': '▶',
+                'text-size': 16,
+                'text-keep-upright': false,
+                'text-rotation-alignment': 'map',
+              },
+              paint: {
+                'text-color': '#ffffff',
+                'text-halo-color': '#3b82f6',
+                'text-halo-width': 3,
+              },
+            });
+
+            console.log('✅ Route layers added to map (selected:', selectedIdx, 'alts:', data.routes.length - 1, ')');
           } catch (error) {
             console.error('❌ Error adding/updating route:', error);
           }
         };
 
-        // If style is already loaded, add route immediately
         if (map.current.isStyleLoaded()) {
-          addOrUpdateRoute();
+          renderRoutes();
         } else {
-          // Otherwise wait for style to load
-          console.log('⏳ Waiting for style to load...');
           map.current.once('styledata', () => {
-            console.log('✅ Style loaded, adding route');
-            addOrUpdateRoute();
+            renderRoutes();
           });
         }
       }
@@ -586,27 +581,120 @@ const DeliveryMapComponent = ({
     } catch (error) {
       console.error('❌ Error fetching route:', error);
     }
-  }, [coordinates, isMapReady, onRouteCalculated, vehicleType, showTraffic, showAlternatives, selectedRouteIndex]);
+  }, [coordinates, isMapReady, onRouteCalculated, vehicleType, showTraffic, showAlternatives, activeRouteIndex, onRouteSelected]);
+
+  // Re-render routes when active index changes (without re-fetching from API)
+  useEffect(() => {
+    if (!map.current || !isMapReady || routeAlternatives.length <= 1) return;
+    const selectedIdx = Math.min(activeRouteIndex, routeAlternatives.length - 1);
+    const route = routeAlternatives[selectedIdx];
+    if (!route?.geometry?.coordinates) return;
+
+    const rerenderRoutes = () => {
+      if (!map.current) return;
+      try {
+        // Remove existing layers/sources
+        for (let i = 0; i < 3; i++) {
+          const altId = `route-alt-${i}`;
+          if (map.current.getLayer(altId)) map.current.removeLayer(altId);
+          if (map.current.getSource(altId)) map.current.removeSource(altId);
+        }
+        if (map.current.getLayer('route-arrows')) map.current.removeLayer('route-arrows');
+        if (map.current.getLayer('route')) map.current.removeLayer('route');
+        if (map.current.getSource('route')) map.current.removeSource('route');
+
+        // Render alternatives first (behind)
+        routeAlternatives.forEach((altRoute, idx) => {
+          if (idx === selectedIdx || !altRoute.geometry?.coordinates) return;
+          const altId = `route-alt-${idx}`;
+          map.current!.addSource(altId, {
+            type: 'geojson',
+            data: { type: 'Feature', properties: {}, geometry: altRoute.geometry },
+          });
+          map.current!.addLayer({
+            id: altId,
+            type: 'line',
+            source: altId,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#94a3b8', 'line-width': 4, 'line-opacity': 0.5, 'line-dasharray': [2, 2] },
+          });
+          map.current!.on('click', altId, () => {
+            setActiveRouteIndex(idx);
+            const d = parseFloat((altRoute.distance / 1000).toFixed(2));
+            const t = Math.round(altRoute.duration / 60);
+            if (onRouteSelected) onRouteSelected(idx, { distance: d, duration: t });
+          });
+          map.current!.on('mouseenter', altId, () => { if (map.current) map.current.getCanvas().style.cursor = 'pointer'; });
+          map.current!.on('mouseleave', altId, () => { if (map.current) map.current.getCanvas().style.cursor = ''; });
+        });
+
+        // Selected route on top
+        map.current.addSource('route', {
+          type: 'geojson',
+          data: { type: 'Feature', properties: {}, geometry: route.geometry },
+          lineMetrics: true,
+        });
+        map.current.addLayer({
+          id: 'route',
+          type: 'line',
+          source: 'route',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#3b82f6', 'line-width': 6, 'line-opacity': 0.9, 'line-emissive-strength': 1.0 },
+        });
+        map.current.addLayer({
+          id: 'route-arrows',
+          type: 'symbol',
+          source: 'route',
+          layout: { 'symbol-placement': 'line', 'symbol-spacing': 80, 'text-field': '▶', 'text-size': 16, 'text-keep-upright': false, 'text-rotation-alignment': 'map' },
+          paint: { 'text-color': '#ffffff', 'text-halo-color': '#3b82f6', 'text-halo-width': 3 },
+        });
+
+        // Notify parent of the newly selected route
+        const distKm = parseFloat((route.distance / 1000).toFixed(2));
+        const durMin = Math.round(route.duration / 60);
+        if (onRouteCalculated) {
+          onRouteCalculated({
+            distance: distKm,
+            duration: durMin,
+            polyline: route.geometry,
+            alternatives: routeAlternatives,
+            hasTrafficData: !!route.legs?.[0]?.annotation?.congestion?.length,
+          });
+        }
+      } catch (err) {
+        console.error('❌ Error re-rendering routes:', err);
+      }
+    };
+
+    if (map.current.isStyleLoaded()) {
+      rerenderRoutes();
+    } else {
+      map.current.once('styledata', rerenderRoutes);
+    }
+  }, [activeRouteIndex, routeAlternatives.length]);
 
   // Debounced route calculation
   useEffect(() => {
     if (!coordinates || !isMapReady) {
       // Remove route if no destinations
-      if (map.current?.getSource('route')) {
+      if (map.current) {
         // Cancel any running animation first
         if (animationFrameId.current !== null) {
           cancelAnimationFrame(animationFrameId.current);
           animationFrameId.current = null;
         }
-        
-        if (map.current.getLayer('route')) {
-          map.current.removeLayer('route');
+        // Remove alternative layers
+        for (let i = 0; i < 3; i++) {
+          const altId = `route-alt-${i}`;
+          if (map.current.getLayer(altId)) map.current.removeLayer(altId);
+          if (map.current.getSource(altId)) map.current.removeSource(altId);
         }
-        if (map.current.getLayer('route-arrows')) {
-          map.current.removeLayer('route-arrows');
-        }
-        map.current.removeSource('route');
+        // Remove primary layers
+        if (map.current.getLayer('route-arrows')) map.current.removeLayer('route-arrows');
+        if (map.current.getLayer('route')) map.current.removeLayer('route');
+        if (map.current.getSource('route')) map.current.removeSource('route');
       }
+      setRouteAlternatives([]);
       return;
     }
 
@@ -633,22 +721,45 @@ const DeliveryMapComponent = ({
       
       {/* Route Alternatives Panel */}
       {routeAlternatives.length > 1 && (
-        <div className="absolute top-4 right-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-3 max-w-xs z-10">
+        <div className="absolute top-4 right-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-3 max-w-xs z-10" style={{ marginTop: '120px' }}>
           <h3 className="text-sm font-semibold mb-2 text-foreground">Route Options</h3>
           <div className="space-y-2">
             {routeAlternatives.map((route, index) => {
               const distanceKm = (route.distance / 1000).toFixed(1);
               const durationMin = Math.round(route.duration / 60);
               const isActive = index === activeRouteIndex;
+
+              // Determine route label based on characteristics
+              let label = `Route ${index + 1}`;
+              if (index === 0) {
+                label = '⚡ Fastest';
+              } else {
+                // Compare to fastest route
+                const fastestDist = routeAlternatives[0].distance;
+                if (route.distance < fastestDist) {
+                  label = '📏 Shortest';
+                } else {
+                  // Check congestion
+                  const congestion = route.legs?.[0]?.annotation?.congestion || [];
+                  const heavyCount = congestion.filter((c: string) => c === 'heavy' || c === 'severe').length;
+                  const totalCount = congestion.length || 1;
+                  if (heavyCount / totalCount < 0.15) {
+                    label = '🟢 Least Traffic';
+                  } else {
+                    label = `🔀 Alternate ${index}`;
+                  }
+                }
+              }
               
               return (
                 <button
                   key={index}
                   onClick={() => {
                     setActiveRouteIndex(index);
-                    // Trigger route recalculation with new index
-                    if (coordinates) {
-                      fetchOptimizedRoute();
+                    const altDistKm = parseFloat((route.distance / 1000).toFixed(2));
+                    const altDurMin = Math.round(route.duration / 60);
+                    if (onRouteSelected) {
+                      onRouteSelected(index, { distance: altDistKm, duration: altDurMin });
                     }
                   }}
                   className={`w-full text-left p-2.5 rounded-md transition-all ${
@@ -658,9 +769,7 @@ const DeliveryMapComponent = ({
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">
-                      {index === 0 ? 'Fastest' : index === 1 ? 'Alternate' : `Route ${index + 1}`}
-                    </span>
+                    <span className="text-xs font-medium">{label}</span>
                     {isActive && (
                       <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -685,6 +794,7 @@ const DeliveryMapComponent = ({
               );
             })}
           </div>
+          <p className="text-[10px] text-muted-foreground mt-2 text-center">Click gray routes on map to switch</p>
         </div>
       )}
     </div>

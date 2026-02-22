@@ -109,6 +109,8 @@ export default function OrdersPage() {
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [routeDistance, setRouteDistance] = useState<number>(0);
   const [routeDuration, setRouteDuration] = useState<number>(0);
+  const [routeAlternatives, setRouteAlternatives] = useState<any[]>([]);
+  const [selectedRouteIdx, setSelectedRouteIdx] = useState<number>(0);
   
   // Geocoding loading states
   const [isGeocodingPickup, setIsGeocodingPickup] = useState(false);
@@ -375,9 +377,12 @@ export default function OrdersPage() {
   };
 
   // Memoize the route calculation handler to prevent recreation on every render
-  const handleRouteCalculated = useCallback((routeInfo: { distance: number; duration: number }) => {
+  const handleRouteCalculated = useCallback((routeInfo: { distance: number; duration: number; alternatives?: any[] }) => {
     setRouteDistance(routeInfo.distance);
     setRouteDuration(routeInfo.duration);
+    if (routeInfo.alternatives && routeInfo.alternatives.length > 1) {
+      setRouteAlternatives(routeInfo.alternatives);
+    }
     // Pricing will be calculated in dispatch page based on vehicle selection
   }, []);
 
@@ -432,6 +437,13 @@ export default function OrdersPage() {
       setGeocodingDropoffIndex(null);
     }
   }, [dropoffStops]);
+
+  // Handle route selection from map or panel
+  const handleRouteSelected = useCallback((index: number, routeInfo: { distance: number; duration: number }) => {
+    setSelectedRouteIdx(index);
+    setRouteDistance(routeInfo.distance);
+    setRouteDuration(routeInfo.duration);
+  }, []);
 
   // Trigger map resize when sidebar state changes
   React.useEffect(() => {
@@ -1071,6 +1083,7 @@ export default function OrdersPage() {
           onPickupDragEnd={handlePickupDragEnd}
           onDropoffDragEnd={handleDropoffDragEnd}
           showAlternatives={true}
+          onRouteSelected={handleRouteSelected}
         />
         
         {/* Floating Controls on Map */}
@@ -1095,18 +1108,92 @@ export default function OrdersPage() {
           )}
         </div>
 
-        {/* Quick Stats Overlay - No pricing shown, calculated in dispatch */}
+        {/* Route Suggestions Panel */}
         {(demoPickup || demoDropoffs.length > 0) && (
-          <div className="absolute bottom-4 left-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-4 min-w-[280px]">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Estimated Distance</span>
-                <span className="font-semibold">{routeDistance > 0 ? `${routeDistance} km` : '-- km'}</span>
+          <div className="absolute bottom-4 left-4 bg-background/95 backdrop-blur-sm border rounded-lg shadow-lg p-4 min-w-[300px] max-w-[360px]">
+            <div className="space-y-3">
+              {/* Selected route stats */}
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                  <Navigation className="h-3.5 w-3.5 text-primary" />
+                  Route Summary
+                </h4>
+                {routeAlternatives.length > 1 && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    {routeAlternatives.length} routes
+                  </Badge>
+                )}
               </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Estimated Time</span>
-                <span className="font-semibold">{routeDuration > 0 ? `${routeDuration} min` : '-- min'}</span>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-muted/50 rounded-lg p-2 text-center">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Distance</p>
+                  <p className="text-lg font-bold">{routeDistance > 0 ? `${routeDistance} km` : '-- km'}</p>
+                </div>
+                <div className="bg-muted/50 rounded-lg p-2 text-center">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Est. Time</p>
+                  <p className="text-lg font-bold">{routeDuration > 0 ? `${routeDuration} min` : '-- min'}</p>
+                </div>
               </div>
+
+              {/* Route alternatives comparison */}
+              {routeAlternatives.length > 1 && (
+                <>
+                  <Separator />
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Compare Routes</p>
+                    {routeAlternatives.map((route, idx) => {
+                      const distKm = (route.distance / 1000).toFixed(1);
+                      const durMin = Math.round(route.duration / 60);
+                      const isSelected = idx === selectedRouteIdx;
+                      const congestion = route.legs?.[0]?.annotation?.congestion || [];
+                      const heavyPct = congestion.length 
+                        ? Math.round((congestion.filter((c: string) => c === 'heavy' || c === 'severe').length / congestion.length) * 100)
+                        : 0;
+
+                      let label = `Route ${idx + 1}`;
+                      let emoji = '🔀';
+                      if (idx === 0) { label = 'Fastest'; emoji = '⚡'; }
+                      else if (route.distance < routeAlternatives[0].distance) { label = 'Shortest'; emoji = '📏'; }
+                      else if (heavyPct < 15) { label = 'Least Traffic'; emoji = '🟢'; }
+
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => handleRouteSelected(idx, { distance: parseFloat((route.distance / 1000).toFixed(2)), duration: Math.round(route.duration / 60) })}
+                          className={`w-full flex items-center justify-between p-2 rounded-md text-xs transition-all ${
+                            isSelected 
+                              ? 'bg-primary/10 border border-primary/30 text-foreground' 
+                              : 'hover:bg-muted/80 text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>{emoji}</span>
+                            <span className="font-medium">{label}</span>
+                            {isSelected && (
+                              <CheckCircle2 className="h-3 w-3 text-primary" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 tabular-nums">
+                            <span>{distKm} km</span>
+                            <span className="text-muted-foreground">·</span>
+                            <span>{durMin} min</span>
+                            {heavyPct > 0 && (
+                              <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${
+                                heavyPct > 30 ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' 
+                                : heavyPct > 15 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                                : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                              }`}>
+                                {heavyPct}% traffic
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

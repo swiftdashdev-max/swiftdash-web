@@ -118,6 +118,58 @@ export class EdgeFunctions {
   }
 
   /**
+   * Send booking confirmation SMS with tracking link
+   */
+  async sendTrackingSms(params: {
+    deliveryId: string;
+    isMultiStop?: boolean;
+    stopTrackingCodes?: Array<{
+      trackingCode: string;
+      recipientPhone: string;
+      recipientName?: string;
+      stopNumber?: number;
+    }>;
+  }) {
+    const { data, error } = await this.supabase.functions.invoke('send-tracking-sms', {
+      body: params
+    });
+
+    if (error) {
+      // Non-fatal — log but don't throw so booking still succeeds
+      console.warn('⚠️ SMS send failed (non-fatal):', error.message);
+      return null;
+    }
+
+    return data;
+  }
+
+  /**
+   * Send booking confirmation email with tracking link
+   */
+  async sendTrackingEmail(params: {
+    deliveryId: string;
+    isMultiStop?: boolean;
+    stopTrackingCodes?: Array<{
+      trackingCode: string;
+      recipientEmail: string;
+      recipientName?: string;
+      stopNumber?: number;
+      address?: string;
+    }>;
+  }) {
+    const { data, error } = await this.supabase.functions.invoke('send-tracking-email', {
+      body: params
+    });
+
+    if (error) {
+      console.warn('⚠️ Email send failed (non-fatal):', error.message);
+      return null;
+    }
+
+    return data;
+  }
+
+  /**
    * Pair driver with delivery using Edge Function
    */
   async pairDriver(deliveryId: string) {
@@ -140,4 +192,6 @@ export const edgeFunctions = new EdgeFunctions();
 export const getQuote = edgeFunctions.getQuote.bind(edgeFunctions);
 export const bookDelivery = edgeFunctions.bookDelivery.bind(edgeFunctions);
 export const createMultiStopDelivery = edgeFunctions.createMultiStopDelivery.bind(edgeFunctions);
+export const sendTrackingSms = edgeFunctions.sendTrackingSms.bind(edgeFunctions);
+export const sendTrackingEmail = edgeFunctions.sendTrackingEmail.bind(edgeFunctions);
 export const pairDriver = edgeFunctions.pairDriver.bind(edgeFunctions);

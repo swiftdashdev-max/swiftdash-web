@@ -45,7 +45,8 @@ export const STORAGE_BUCKETS = {
   VEHICLE_OR_CR: 'OR_CR_pictures', 
   VEHICLE_PHOTOS: 'vehicle_photos',
   LTFRB_DOCUMENTS: 'LTFRB_pictures',
-  DRIVER_PROFILE: 'driver_profile_pictures'
+  DRIVER_PROFILE: 'driver_profile_pictures',
+  BUSINESS_LOGOS: 'business-logos',
 } as const;
 
 // Create storage buckets if they don't exist
@@ -128,6 +129,37 @@ export const uploadDriverDocument = async (
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Upload failed'
+    };
+  }
+};
+
+// Upload business logo (uses regular authenticated client, no service role needed)
+export const uploadBusinessLogo = async (file: File, businessId: string) => {
+  try {
+    const supabase = getSupabaseClient();
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'png';
+    const fileName = `${businessId}/logo_${Date.now()}.${fileExt}`;
+
+    const { data, error } = await supabase.storage
+      .from('business-logos')
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: file.type,
+      });
+
+    if (error) throw error;
+
+    const { data: urlData } = supabase.storage
+      .from('business-logos')
+      .getPublicUrl(fileName);
+
+    return { success: true, publicUrl: urlData.publicUrl };
+  } catch (error) {
+    console.error('Logo upload error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Upload failed',
     };
   }
 };

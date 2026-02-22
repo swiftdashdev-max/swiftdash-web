@@ -38,6 +38,10 @@ import {
   ChevronRight,
   Circle,
   XCircle,
+  Truck,
+  Tag,
+  Filter,
+  TrendingUp,
 } from 'lucide-react';
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
@@ -234,6 +238,7 @@ export default function TrackingPage() {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedDelivery, setSelectedDelivery] = useState<DeliveryWithDriver | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
@@ -450,11 +455,14 @@ export default function TrackingPage() {
       const pickupId = `pickup-${selectedDelivery.id}`;
       const el = document.createElement('div');
       el.className = 'pickup-marker';
-      el.innerHTML = '📦';
-      el.style.fontSize = '24px';
+      el.style.width = '36px';
+      el.style.height = '36px';
+      el.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 24 24' fill='none' stroke='%2310b981' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z'/%3E%3Ccircle cx='12' cy='10' r='3' fill='%2310b981'/%3E%3C/svg%3E")`;
+      el.style.backgroundSize = 'contain';
+      el.style.backgroundRepeat = 'no-repeat';
       el.style.cursor = 'pointer';
 
-      const marker = new mapboxgl.Marker(el)
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
         .setLngLat([selectedDelivery.pickup_longitude, selectedDelivery.pickup_latitude])
         .setPopup(
           new mapboxgl.Popup({ offset: 25 })
@@ -472,11 +480,14 @@ export default function TrackingPage() {
       const dropoffId = `dropoff-${selectedDelivery.id}`;
       const el = document.createElement('div');
       el.className = 'dropoff-marker';
-      el.innerHTML = '📍';
-      el.style.fontSize = '24px';
+      el.style.width = '36px';
+      el.style.height = '36px';
+      el.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 24 24' fill='none' stroke='%23ef4444' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z'/%3E%3Ccircle cx='12' cy='10' r='3' fill='%23ef4444'/%3E%3C/svg%3E")`;
+      el.style.backgroundSize = 'contain';
+      el.style.backgroundRepeat = 'no-repeat';
       el.style.cursor = 'pointer';
 
-      const marker = new mapboxgl.Marker(el)
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
         .setLngLat([selectedDelivery.delivery_longitude, selectedDelivery.delivery_latitude])
         .setPopup(
           new mapboxgl.Popup({ offset: 25 })
@@ -813,11 +824,36 @@ export default function TrackingPage() {
     setSelectedDelivery(delivery);
   };
 
-  const filteredDeliveries = deliveries.filter(d =>
-    d.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    d.pickup_address?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    d.delivery_address?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const STATUS_GROUPS: Record<string, string[]> = {
+    pickup: ['driver_assigned', 'going_to_pickup', 'arrived_at_pickup', 'pickup_arrived'],
+    transit: ['picked_up', 'package_collected', 'in_transit', 'going_to_dropoff'],
+    arriving: ['arrived_at_dropoff', 'dropoff_arrived', 'at_destination'],
+  };
+
+  const filteredDeliveries = deliveries.filter(d => {
+    const q = searchTerm.toLowerCase();
+    const matchesSearch =
+      !q ||
+      d.id?.toLowerCase().includes(q) ||
+      (d as any).tracking_number?.toLowerCase().includes(q) ||
+      d.pickup_address?.toLowerCase().includes(q) ||
+      d.delivery_address?.toLowerCase().includes(q) ||
+      d.driver_profiles?.user_profiles?.full_name?.toLowerCase().includes(q);
+
+    const matchesFilter =
+      statusFilter === 'all' ||
+      (statusFilter === 'pickup' && STATUS_GROUPS.pickup.includes(d.status)) ||
+      (statusFilter === 'transit' && STATUS_GROUPS.transit.includes(d.status)) ||
+      (statusFilter === 'arriving' && STATUS_GROUPS.arriving.includes(d.status));
+
+    return matchesSearch && matchesFilter;
+  });
+
+  const countByGroup = {
+    pickup: deliveries.filter(d => STATUS_GROUPS.pickup.includes(d.status)).length,
+    transit: deliveries.filter(d => STATUS_GROUPS.transit.includes(d.status)).length,
+    arriving: deliveries.filter(d => STATUS_GROUPS.arriving.includes(d.status)).length,
+  };
 
   return (
     <div className="h-screen w-full flex flex-col bg-gray-50 dark:bg-gray-900">
@@ -876,16 +912,61 @@ export default function TrackingPage() {
           {sidebarOpen && (
             <>
               {/* Sidebar Header */}
-              <div className="p-6 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Active Deliveries</h2>
+              <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Active Deliveries</h2>
+                  {deliveries.length > 0 && (
+                    <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+                      {countByGroup.pickup > 0 && (
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
+                          {countByGroup.pickup} pickup
+                        </span>
+                      )}
+                      {countByGroup.transit > 0 && (
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
+                          {countByGroup.transit} transit
+                        </span>
+                      )}
+                      {countByGroup.arriving > 0 && (
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                          {countByGroup.arriving} arriving
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
-                    placeholder="Search by tracking, address..."
+                    placeholder="Search by tracking, address, driver..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="pl-10 bg-white dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
                   />
+                </div>
+                {/* Filter pills */}
+                <div className="flex gap-1.5 flex-wrap">
+                  {([
+                    { key: 'all', label: 'All', count: deliveries.length },
+                    { key: 'pickup', label: '📦 Pickup', count: countByGroup.pickup },
+                    { key: 'transit', label: '🚚 Transit', count: countByGroup.transit },
+                    { key: 'arriving', label: '📍 Arriving', count: countByGroup.arriving },
+                  ] as const).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setStatusFilter(key)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all border ${
+                        statusFilter === key
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-blue-400'
+                      }`}
+                    >
+                      {label} {count > 0 && <span className={statusFilter === key ? 'opacity-70' : 'text-gray-400'}>{count}</span>}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -900,91 +981,116 @@ export default function TrackingPage() {
                   </div>
                 ) : filteredDeliveries.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-64 text-center p-6">
-                    <Package className="h-16 w-16 text-gray-300 dark:text-gray-600 mb-4" />
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">No Active Deliveries</h3>
-                    <p className="text-gray-500 dark:text-gray-400">Assigned deliveries will appear here for real-time tracking</p>
+                    {searchTerm || statusFilter !== 'all' ? (
+                      <>
+                        <Search className="h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" />
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">No matches</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">Try a different search or filter</p>
+                        <Button variant="outline" size="sm" onClick={() => { setSearchTerm(''); setStatusFilter('all'); }}>
+                          Clear filters
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Truck className="h-14 w-14 text-gray-300 dark:text-gray-600 mb-3" />
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">No Active Deliveries</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Deliveries with assigned drivers will appear here for live tracking</p>
+                      </>
+                    )}
                   </div>
                 ) : (
                   <div className="p-4 space-y-3">
                     {filteredDeliveries.map((delivery) => {
                       const location = driverLocations.get(delivery.id);
                       const isSelected = selectedDelivery?.id === delivery.id;
+                      const routeInfo = routeDataRef.current.get(delivery.id);
+                      const etaMin = routeInfo ? Math.round(routeInfo.duration / 60) : null;
+                      const distKm = routeInfo ? (routeInfo.distance / 1000).toFixed(1) : null;
+                      const trackingNum = (delivery as any).tracking_number;
 
                       return (
                         <Card
                           key={delivery.id}
-                          className={`cursor-pointer transition-all duration-200 hover:shadow-md ${
+                          className={`cursor-pointer transition-all duration-200 ${
                             isSelected 
                               ? 'ring-2 ring-blue-500 shadow-lg bg-blue-50 dark:bg-blue-900/30' 
                               : 'hover:shadow-md hover:bg-gray-50 dark:hover:bg-gray-700'
                           }`}
                           onClick={() => focusOnDelivery(delivery)}
                         >
-                          <CardContent className="p-4">
-                            <div className="space-y-3">
-                              {/* Header */}
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                                    <span className="text-white font-bold text-sm">
-                                      #{delivery.id?.slice(-4).toUpperCase() || '---'}
-                                    </span>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold text-gray-900 dark:text-white">Delivery #{delivery.id?.slice(-8).toUpperCase() || 'N/A'}</p>
-                                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                                      ₱{delivery.total_amount?.toFixed(2) || '0.00'}
-                                    </p>
-                                  </div>
-                                </div>
+                          <CardContent className="p-3">
+                            <div className="space-y-2.5">
+                              {/* Header row: status badge + ETA chip */}
+                              <div className="flex items-center justify-between gap-2">
                                 <Badge
                                   variant="secondary"
-                                  className={`${getStatusColor(delivery.status)} text-white text-xs`}
+                                  className={`${getStatusColor(delivery.status)} text-white text-xs shrink-0`}
                                 >
                                   {getStatusLabel(delivery.status)}
                                 </Badge>
+                                <div className="flex items-center gap-1.5">
+                                  {etaMin !== null && (
+                                    <span className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-semibold px-2 py-0.5 rounded-full border border-blue-200 dark:border-blue-700">
+                                      <Clock className="h-3 w-3" />
+                                      {etaMin} min
+                                    </span>
+                                  )}
+                                  {distKm && (
+                                    <span className="text-xs text-gray-400 dark:text-gray-500">{distKm} km</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Tracking number + amount */}
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5">
+                                  <Tag className="h-3 w-3 text-gray-400" />
+                                  <span className="font-mono text-xs font-medium text-gray-600 dark:text-gray-300">
+                                    {trackingNum || `#${delivery.id?.slice(-8).toUpperCase()}`}
+                                  </span>
+                                </div>
+                                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                                  ₱{delivery.total_amount?.toFixed(2) || '0.00'}
+                                </span>
                               </div>
 
                               {/* Addresses */}
-                              <div className="space-y-2">
+                              <div className="space-y-1.5">
                                 <div className="flex items-start gap-2">
-                                  <MapPin className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Pickup</p>
-                                    <p className="text-sm text-gray-800 dark:text-gray-200 truncate">{delivery.pickup_address}</p>
-                                  </div>
+                                  <div className="w-2 h-2 rounded-full bg-green-500 mt-1.5 flex-shrink-0" />
+                                  <p className="text-xs text-gray-600 dark:text-gray-300 truncate leading-snug">{delivery.pickup_address}</p>
                                 </div>
                                 <div className="flex items-start gap-2">
-                                  <MapPin className="h-4 w-4 text-red-600 mt-0.5 flex-shrink-0" />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Dropoff</p>
-                                    <p className="text-sm text-gray-800 dark:text-gray-200 truncate">{delivery.delivery_address}</p>
-                                  </div>
+                                  <div className="w-2 h-2 rounded-full bg-red-500 mt-1.5 flex-shrink-0" />
+                                  <p className="text-xs text-gray-600 dark:text-gray-300 truncate leading-snug">{delivery.delivery_address}</p>
                                 </div>
                               </div>
 
-                              {/* Driver & Status */}
-                              <div className="flex items-center justify-between pt-2 border-t dark:border-gray-700">
-                                <div className="flex items-center gap-2">
+                              {/* Driver + live indicator */}
+                              <div className="flex items-center justify-between pt-1.5 border-t dark:border-gray-700">
+                                <div className="flex items-center gap-1.5 min-w-0">
                                   {delivery.driver_profiles ? (
                                     <>
-                                      <User className="h-4 w-4 text-gray-400 dark:text-gray-500" />
-                                      <span className="text-sm text-gray-700 dark:text-gray-300 truncate">
+                                      <User className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                                      <span className="text-xs text-gray-600 dark:text-gray-300 truncate">
                                         {delivery.driver_profiles.user_profiles.full_name}
                                       </span>
                                     </>
                                   ) : (
-                                    <span className="text-sm text-gray-500">No driver assigned</span>
+                                    <span className="text-xs text-gray-400">No driver</span>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  {location && (
-                                    <div className="flex items-center gap-1">
-                                      <Circle className="h-2 w-2 fill-green-500 text-green-500" />
-                                      <span className="text-xs text-gray-500">
-                                        {Math.floor((Date.now() - location.timestamp) / 1000)}s ago
-                                      </span>
-                                    </div>
+                                <div className="flex items-center gap-1.5">
+                                  {location ? (
+                                    <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                                      <Circle className="h-2 w-2 fill-green-500 text-green-500 animate-pulse" />
+                                      Live
+                                    </span>
+                                  ) : (
+                                    <span className="flex items-center gap-1 text-xs text-gray-400">
+                                      <Circle className="h-2 w-2 fill-gray-300 text-gray-300" />
+                                      Offline
+                                    </span>
                                   )}
                                   <Button
                                     size="sm"
@@ -994,7 +1100,7 @@ export default function TrackingPage() {
                                       setSelectedDelivery(delivery);
                                       setDetailsOpen(true);
                                     }}
-                                    className="h-8 px-2 hover:bg-white"
+                                    className="h-6 w-6 p-0 hover:bg-white dark:hover:bg-gray-600"
                                   >
                                     <Navigation className="h-3 w-3" />
                                   </Button>
