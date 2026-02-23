@@ -50,6 +50,16 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Package,
   MapPin,
   Navigation,
@@ -80,7 +90,19 @@ import {
   CreditCard,
   StickyNote,
   RotateCcw,
+  ArrowUpDown,
+  ChevronUp,
+  ChevronDown,
+  Ban,
+  FileDown,
 } from 'lucide-react';
+import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
+import { GoogleMapsLoader } from '@/components/google-maps-loader';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar as CalendarPicker } from '@/components/ui/calendar';
+import { DateRange } from 'react-day-picker';
+import { formatDuration } from '@/lib/mapbox-routing';
+import { format } from 'date-fns';
 
 interface Delivery {
   id: string;
@@ -88,6 +110,10 @@ interface Delivery {
   status: string;
   pickup_address: string;
   delivery_address: string;
+  pickup_latitude?: number;
+  pickup_longitude?: number;
+  delivery_latitude?: number;
+  delivery_longitude?: number;
   vehicle_type_id?: string;
   distance_km?: number;
   total_price?: number;
@@ -110,6 +136,19 @@ interface Delivery {
   total_amount?: number;
   package_description?: string;
   delivery_notes?: string;
+  estimated_duration?: number;
+}
+
+interface DeliveryStop {
+  id: string;
+  stop_number: number;
+  address: string;
+  recipient_name?: string;
+  recipient_phone?: string;
+  delivery_notes?: string;
+  status: string;
+  completed_at?: string | null;
+  tracking_code?: string;
 }
 
 interface Driver {
@@ -158,7 +197,10 @@ export default function DispatchPage() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [driverDetails, setDriverDetails] = useState<Driver | null>(null);
+  const [viewStops, setViewStops] = useState<DeliveryStop[]>([]);
+  const [loadingStops, setLoadingStops] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedStopId, setCopiedStopId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [realtimeUpdates, setRealtimeUpdates] = useState(0); // Track real-time updates
   const [selectedDeliveries, setSelectedDeliveries] = useState<string[]>([]);
@@ -175,8 +217,26 @@ export default function DispatchPage() {
   const [assigning, setAssigning] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | 'last7' | 'all'>('all');
+  const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | 'last7' | 'custom' | 'all'>('all');
+  const [customDateRange, setCustomDateRange] = useState<DateRange | undefined>(undefined);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const itemsPerPage = 50;
+
+  // Sorting
+  const [sortColumn, setSortColumn] = useState<string>('created_at');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+
+  // Cancel confirmation dialog
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
+  const [cancelTargetIds, setCancelTargetIds] = useState<string[]>([]);
+  const [isBatchCancelling, setIsBatchCancelling] = useState(false);
+
+  // Server-side status counts
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({
+    total: 0, pending: 0, driver_offered: 0, driver_assigned: 0,
+    in_transit: 0, delivered: 0, cancelled: 0,
+  });
+  const [totalRevenue, setTotalRevenue] = useState(0);
   
   // Fleet vs Marketplace
   const [driverSource, setDriverSource] = useState<'fleet' | 'marketplace'>('fleet');
@@ -319,7 +379,7 @@ export default function DispatchPage() {
     if (!userLoading && businessId) {
       fetchData();
     }
-  }, [currentPage]);
+  }, [currentPage, sortColumn, sortDirection, dateFilter, customDateRange]);
 
   const fetchData = async () => {
     try {
@@ -331,38 +391,94 @@ export default function DispatchPage() {
         return;
       }
 
-      // Fetch total count for pagination
-      const { count } = await supabase
+      // Build date range helper
+      const now = new Date();
+      let dateStart: string | null = null;
+      let dateEnd: string | null = null;
+      if (dateFilter === 'today') {
+        dateStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      } else if (dateFilter === 'yesterday') {
+        dateStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString();
+        dateEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      } else if (dateFilter === 'last7') {
+        dateStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      } else if (dateFilter === 'custom' && customDateRange?.from) {
+        dateStart = new Date(customDateRange.from.getFullYear(), customDateRange.from.getMonth(), customDateRange.from.getDate()).toISOString();
+        if (customDateRange.to) {
+          dateEnd = new Date(customDateRange.to.getFullYear(), customDateRange.to.getMonth(), customDateRange.to.getDate() + 1).toISOString();
+        } else {
+          dateEnd = new Date(customDateRange.from.getFullYear(), customDateRange.from.getMonth(), customDateRange.from.getDate() + 1).toISOString();
+        }
+      }
+
+      // Fetch total count for pagination (with date filter applied)
+      let countQuery = supabase
         .from('deliveries')
         .select('*', { count: 'exact', head: true })
         .eq('business_id', businessId);
+      if (dateStart) countQuery = countQuery.gte('created_at', dateStart);
+      if (dateEnd) countQuery = countQuery.lt('created_at', dateEnd);
+      const { count } = await countQuery;
       
       setTotalCount(count || 0);
 
-      // Fetch deliveries with pagination (50 per page)
+      // Fetch server-side status counts (parallel queries)
+      const statusesToCount = ['pending', 'driver_offered', 'driver_assigned', 'delivered', 'cancelled'];
+      const inTransitStatuses = ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'];
+
+      const countPromises = statusesToCount.map(async (status) => {
+        let q = supabase.from('deliveries').select('*', { count: 'exact', head: true })
+          .eq('business_id', businessId).eq('status', status);
+        if (dateStart) q = q.gte('created_at', dateStart);
+        if (dateEnd) q = q.lt('created_at', dateEnd);
+        const { count: c } = await q;
+        return { status, count: c || 0 };
+      });
+
+      // In-transit is a group of statuses
+      const inTransitPromise = (async () => {
+        let q = supabase.from('deliveries').select('*', { count: 'exact', head: true })
+          .eq('business_id', businessId).in('status', inTransitStatuses);
+        if (dateStart) q = q.gte('created_at', dateStart);
+        if (dateEnd) q = q.lt('created_at', dateEnd);
+        const { count: c } = await q;
+        return c || 0;
+      })();
+
+      // Revenue sum — fetch delivered orders' total_price
+      const revenuePromise = (async () => {
+        let q = supabase.from('deliveries').select('total_price')
+          .eq('business_id', businessId).eq('status', 'delivered');
+        if (dateStart) q = q.gte('created_at', dateStart);
+        if (dateEnd) q = q.lt('created_at', dateEnd);
+        const { data: revData } = await q;
+        return (revData || []).reduce((sum: number, d: any) => sum + (d.total_price || 0), 0);
+      })();
+
+      const [countsResults, inTransitCount, revenue] = await Promise.all([
+        Promise.all(countPromises),
+        inTransitPromise,
+        revenuePromise,
+      ]);
+
+      const newCounts: Record<string, number> = { total: count || 0, in_transit: inTransitCount };
+      countsResults.forEach(({ status, count: c }) => { newCounts[status] = c; });
+      setStatusCounts(newCounts);
+      setTotalRevenue(revenue);
+
+      // Fetch deliveries with pagination and sorting
       const from = (currentPage - 1) * itemsPerPage;
       const to = from + itemsPerPage - 1;
       
-      // Build date range filter
       let deliveriesQuery = supabase
         .from('deliveries')
-        .select('id, tracking_number, status, pickup_address, delivery_address, vehicle_type_id, distance_km, total_price, is_scheduled, scheduled_pickup_time, created_at, driver_id, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, is_multi_stop, total_stops, business_id, fleet_vehicle_id, payment_status, payment_method, payment_by, delivery_fee, total_amount, package_description, delivery_notes')
+        .select('id, tracking_number, status, pickup_address, delivery_address, pickup_latitude, pickup_longitude, delivery_latitude, delivery_longitude, vehicle_type_id, distance_km, total_price, is_scheduled, scheduled_pickup_time, created_at, driver_id, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, is_multi_stop, total_stops, business_id, fleet_vehicle_id, payment_status, payment_method, payment_by, delivery_fee, total_amount, package_description, delivery_notes, estimated_duration')
         .eq('business_id', businessId)
-        .order('created_at', { ascending: false })
+        .order(sortColumn, { ascending: sortDirection === 'asc' })
         .range(from, to);
 
-      const now = new Date();
-      if (dateFilter === 'today') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-        deliveriesQuery = deliveriesQuery.gte('created_at', start);
-      } else if (dateFilter === 'yesterday') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString();
-        const end = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-        deliveriesQuery = deliveriesQuery.gte('created_at', start).lt('created_at', end);
-      } else if (dateFilter === 'last7') {
-        const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        deliveriesQuery = deliveriesQuery.gte('created_at', start);
-      }
+      if (dateStart) deliveriesQuery = deliveriesQuery.gte('created_at', dateStart);
+      if (dateEnd) deliveriesQuery = deliveriesQuery.lt('created_at', dateEnd);
 
       const { data: deliveriesData, error: deliveriesError } = await deliveriesQuery;
 
@@ -558,6 +674,47 @@ export default function DispatchPage() {
     setShowAssignModal(true);
   };
 
+  // Helper: send tracking SMS + email, with multi-stop stop-specific links when applicable
+  const sendTrackingNotifications = async (deliveryId: string) => {
+    try {
+      const delivery = deliveries.find(d => d.id === deliveryId);
+      if (delivery?.is_multi_stop) {
+        // Fetch stop tracking codes so each recipient gets their own private link
+        const { data: stops } = await supabase
+          .from('delivery_stops')
+          .select('stop_number, tracking_code, recipient_name, recipient_phone, address')
+          .eq('delivery_id', deliveryId)
+          .gt('stop_number', 0)
+          .order('stop_number');
+
+        if (stops && stops.length > 0) {
+          const stopTrackingCodes = stops
+            .filter((s: any) => s.recipient_phone && s.tracking_code)
+            .map((s: any) => ({
+              trackingCode: s.tracking_code,
+              recipientPhone: s.recipient_phone,
+              recipientName: s.recipient_name || 'Customer',
+              stopNumber: s.stop_number,
+              address: s.address,
+            }));
+
+          sendTrackingSms({ deliveryId, isMultiStop: true, stopTrackingCodes }).catch(() => {});
+          // Email: stop recipients don't have email addresses in delivery_stops,
+          // so send the parent tracking email to the main delivery contact only
+          sendTrackingEmail({ deliveryId }).catch(() => {});
+          return;
+        }
+      }
+      // Fallback: single-stop or no stops found
+      sendTrackingSms({ deliveryId }).catch(() => {});
+      sendTrackingEmail({ deliveryId }).catch(() => {});
+    } catch {
+      // Non-fatal — at least try plain send
+      sendTrackingSms({ deliveryId }).catch(() => {});
+      sendTrackingEmail({ deliveryId }).catch(() => {});
+    }
+  };
+
   const handleAutoAssign = async () => {
     try {
       setAssigning(true);
@@ -567,9 +724,8 @@ export default function DispatchPage() {
         try {
           const result = await pairDriver(deliveryId);
           console.log(`✅ Successfully assigned driver to delivery ${deliveryId}:`, result);
-          // Send tracking SMS + email now that driver is assigned (non-fatal)
-          sendTrackingSms({ deliveryId }).catch(() => {});
-          sendTrackingEmail({ deliveryId }).catch(() => {});
+          // Send tracking notifications — each multi-stop recipient gets their own link
+          sendTrackingNotifications(deliveryId);
         } catch (err) {
           console.error(`❌ Error calling pair-driver for ${deliveryId}:`, err);
         }
@@ -715,9 +871,8 @@ export default function DispatchPage() {
 
       console.log('✅ Successfully assigned delivery:', data);
 
-      // Send tracking SMS + email now that driver is assigned (non-fatal)
-      sendTrackingSms({ deliveryId }).catch(() => {});
-      sendTrackingEmail({ deliveryId }).catch(() => {});
+      // Send tracking notifications — each multi-stop recipient gets their own link
+      sendTrackingNotifications(deliveryId);
 
       // Refresh data and close modal
       await fetchData();
@@ -736,43 +891,79 @@ export default function DispatchPage() {
   };
 
   const handleCancelDelivery = async (id: string) => {
-    if (!confirm('Are you sure you want to cancel this delivery?')) return;
+    setCancelTargetIds([id]);
+    setShowCancelDialog(true);
+  };
+
+  const handleBatchCancel = () => {
+    if (selectedDeliveries.length === 0) return;
+    // Filter out delivered/cancelled orders from batch cancel
+    const cancellable = selectedDeliveries.filter(id => {
+      const d = deliveries.find(del => del.id === id);
+      return d && !['delivered', 'cancelled'].includes(d.status);
+    });
+    if (cancellable.length === 0) {
+      toast({ title: 'Cannot cancel', description: 'All selected deliveries are already delivered or cancelled.', variant: 'destructive' });
+      return;
+    }
+    if (cancellable.length < selectedDeliveries.length) {
+      toast({ title: 'Note', description: `${selectedDeliveries.length - cancellable.length} delivered/cancelled order(s) were excluded.` });
+    }
+    setCancelTargetIds(cancellable);
+    setShowCancelDialog(true);
+  };
+
+  const confirmCancelDeliveries = async () => {
+    if (cancelTargetIds.length === 0) return;
+    setIsBatchCancelling(true);
 
     try {
-      console.log('🔄 Attempting to cancel delivery:', id);
-      
-      const { data, error } = await supabase
-        .from('deliveries')
-        .update({
-          status: 'cancelled',
-          updated_at: new Date().toISOString(),
+      const results = await Promise.allSettled(
+        cancelTargetIds.map(async (id) => {
+          const { error } = await supabase
+            .from('deliveries')
+            .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+            .eq('id', id);
+          if (error) throw error;
+          return id;
         })
-        .eq('id', id)
-        .select();
+      );
 
-      if (error) {
-        console.error('❌ Supabase error:', error);
-        throw error;
-      }
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
 
-      // Update local state immediately instead of refetching
-      setDeliveries(prevDeliveries =>
-        prevDeliveries.map(d =>
-          d.id === id
+      // Update local state
+      const cancelledIds = results
+        .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+        .map(r => r.value);
+
+      setDeliveries(prev =>
+        prev.map(d =>
+          cancelledIds.includes(d.id)
             ? { ...d, status: 'cancelled', updated_at: new Date().toISOString() }
             : d
         )
       );
 
-      if (selectedDeliveryForView?.id === id) {
+      if (selectedDeliveryForView && cancelledIds.includes(selectedDeliveryForView.id)) {
         setShowDetailsPanel(false);
         setSelectedDeliveryForView(null);
       }
-      
-      toast({ title: '🚫 Delivery cancelled', description: `Delivery has been cancelled.` });
+
+      setSelectedDeliveries(prev => prev.filter(id => !cancelledIds.includes(id)));
+
+      if (failed > 0) {
+        toast({ title: `Cancelled ${succeeded} of ${cancelTargetIds.length}`, description: `${failed} failed to cancel.`, variant: 'destructive' });
+      } else {
+        toast({ title: '🚫 Cancelled', description: `${succeeded} delivery(ies) cancelled successfully.` });
+      }
     } catch (error) {
-      console.error('❌ Error cancelling delivery:', error);
+      console.error('❌ Error cancelling deliveries:', error);
       toast({ title: 'Cancel failed', description: (error as any).message, variant: 'destructive' });
+    } finally {
+      setIsBatchCancelling(false);
+      setShowCancelDialog(false);
+      setCancelTargetIds([]);
     }
   };
 
@@ -781,7 +972,24 @@ export default function DispatchPage() {
     setEditFormData(delivery);
     setIsEditingDetails(false);
     setDriverDetails(null);
+    setViewStops([]);
     setShowDetailsPanel(true);
+
+    // Fetch stops for multi-stop deliveries
+    if (delivery.is_multi_stop) {
+      setLoadingStops(true);
+      try {
+        const { data: stops } = await supabase
+          .from('delivery_stops')
+          .select('id,stop_number,address,recipient_name,recipient_phone,delivery_notes,status,completed_at,tracking_code')
+          .eq('delivery_id', delivery.id)
+          .gt('stop_number', 0)
+          .order('stop_number');
+        setViewStops(stops || []);
+      } finally {
+        setLoadingStops(false);
+      }
+    }
 
     // Fetch driver info if assigned and not already in drivers list
     if (delivery.driver_id) {
@@ -831,7 +1039,11 @@ export default function DispatchPage() {
         .from('deliveries')
         .update({
           pickup_address: editFormData.pickup_address,
+          pickup_latitude: editFormData.pickup_latitude,
+          pickup_longitude: editFormData.pickup_longitude,
           delivery_address: editFormData.delivery_address,
+          delivery_latitude: editFormData.delivery_latitude,
+          delivery_longitude: editFormData.delivery_longitude,
           vehicle_type_id: editFormData.vehicle_type_id,
           scheduled_pickup_time: editFormData.scheduled_pickup_time,
           pickup_contact_name: editFormData.pickup_contact_name,
@@ -869,6 +1081,18 @@ export default function DispatchPage() {
     setCopiedLink(true);
     toast({ title: '📋 Copied!', description: 'Tracking link copied to clipboard.' });
     setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleCopyStopLink = (stop: DeliveryStop) => {
+    if (!stop.tracking_code) return;
+    const link = `${window.location.origin}/track/${stop.tracking_code}`;
+    navigator.clipboard.writeText(link);
+    setCopiedStopId(stop.id);
+    toast({
+      title: '📋 Stop Link Copied!',
+      description: `Private tracking link for Stop ${stop.stop_number}${stop.recipient_name ? ` (${stop.recipient_name})` : ''} copied.`,
+    });
+    setTimeout(() => setCopiedStopId(null), 2000);
   };
 
   const handleReassign = (delivery: Delivery) => {
@@ -1251,6 +1475,99 @@ export default function DispatchPage() {
     window.URL.revokeObjectURL(url);
   };
 
+  // CSV Export — export current filtered view
+  const handleExportCsv = async () => {
+    try {
+      // Fetch ALL deliveries matching current filters (no pagination limit)
+      let q = supabase
+        .from('deliveries')
+        .select('tracking_number, status, pickup_address, delivery_address, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, distance_km, total_price, payment_status, payment_method, is_multi_stop, total_stops, package_description, delivery_notes, created_at')
+        .eq('business_id', businessId!)
+        .order(sortColumn, { ascending: sortDirection === 'asc' });
+
+      const now = new Date();
+      if (dateFilter === 'today') {
+        q = q.gte('created_at', new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString());
+      } else if (dateFilter === 'yesterday') {
+        q = q.gte('created_at', new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString())
+             .lt('created_at', new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString());
+      } else if (dateFilter === 'last7') {
+        q = q.gte('created_at', new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString());
+      }
+
+      // Apply status filter
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'in_transit') {
+          q = q.in('status', ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination']);
+        } else if (statusFilter === 'delivered') {
+          q = q.in('status', ['delivered', 'cancelled']);
+        } else {
+          q = q.eq('status', statusFilter);
+        }
+      }
+
+      const { data, error } = await q;
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        toast({ title: 'Nothing to export', description: 'No deliveries match the current filters.' });
+        return;
+      }
+
+      const headers = ['Tracking #', 'Status', 'Pickup Address', 'Dropoff Address', 'Sender Name', 'Sender Phone', 'Recipient Name', 'Recipient Phone', 'Distance (km)', 'Total (₱)', 'Payment Status', 'Payment Method', 'Type', 'Stops', 'Package', 'Notes', 'Created'];
+      const rows = data.map(d => [
+        d.tracking_number || '',
+        d.status || '',
+        `"${(d.pickup_address || '').replace(/"/g, '""')}"`,
+        `"${(d.delivery_address || '').replace(/"/g, '""')}"`,
+        d.pickup_contact_name || '',
+        d.pickup_contact_phone || '',
+        d.delivery_contact_name || '',
+        d.delivery_contact_phone || '',
+        (d.distance_km || 0).toFixed(1),
+        d.total_price || 0,
+        d.payment_status || '',
+        d.payment_method || '',
+        d.is_multi_stop ? 'Multi-Stop' : 'Single',
+        d.total_stops || 1,
+        `"${(d.package_description || '').replace(/"/g, '""')}"`,
+        `"${(d.delivery_notes || '').replace(/"/g, '""')}"`,
+        new Date(d.created_at).toLocaleString(),
+      ]);
+
+      const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dispatch_export_${new Date().toISOString().split('T')[0]}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+
+      toast({ title: '✅ Exported', description: `${data.length} deliveries exported to CSV.` });
+    } catch (error) {
+      console.error('❌ Export error:', error);
+      toast({ title: 'Export failed', description: (error as any).message, variant: 'destructive' });
+    }
+  };
+
+  // Column sorting handler
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection(column === 'created_at' ? 'desc' : 'asc');
+    }
+    setCurrentPage(1);
+  };
+
+  const SortIcon = ({ column }: { column: string }) => {
+    if (sortColumn !== column) return <ArrowUpDown className="h-3 w-3 ml-1 opacity-40" />;
+    return sortDirection === 'asc'
+      ? <ChevronUp className="h-3 w-3 ml-1 text-primary" />
+      : <ChevronDown className="h-3 w-3 ml-1 text-primary" />;
+  };
+
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: any; label: string; icon: any }> = {
       pending: {
@@ -1338,14 +1655,12 @@ export default function DispatchPage() {
     });
   }, [deliveries, debouncedSearchQuery, statusFilter]);
 
-  const pendingCount = deliveries.filter(d => d.status === 'pending').length;
-  const offeredCount = deliveries.filter(d => d.status === 'driver_offered').length;
-  const assignedCount = deliveries.filter(d => d.status === 'driver_assigned').length;
-  const inTransitCount = deliveries.filter(d => ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(d.status)).length;
-  const deliveredCount = deliveries.filter(d => ['delivered', 'cancelled'].includes(d.status)).length;
-  const totalRevenue = deliveries
-    .filter(d => d.status === 'delivered')
-    .reduce((sum, d) => sum + (d.total_price || 0), 0);
+  // Use server-side counts (updated by fetchData)
+  const pendingCount = statusCounts.pending || 0;
+  const offeredCount = statusCounts.driver_offered || 0;
+  const assignedCount = statusCounts.driver_assigned || 0;
+  const inTransitCount = statusCounts.in_transit || 0;
+  const deliveredCount = statusCounts.delivered || 0;
 
   if (loading || userLoading) {
     return (
@@ -1360,6 +1675,9 @@ export default function DispatchPage() {
 
   return (
     <div className="space-y-6">
+      {/* Load Google Maps API for address autocomplete */}
+      <GoogleMapsLoader />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -1377,6 +1695,10 @@ export default function DispatchPage() {
             <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
             Live Updates {realtimeUpdates > 0 && `(${realtimeUpdates})`}
           </div>
+          <Button variant="outline" onClick={handleExportCsv}>
+            <FileDown className="h-4 w-4 mr-2" />
+            Export CSV
+          </Button>
           <Button variant="outline" onClick={() => setShowCsvImportModal(true)}>
             <Upload className="h-4 w-4 mr-2" />
             Import CSV
@@ -1396,7 +1718,7 @@ export default function DispatchPage() {
             <Package className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{deliveries.length}</div>
+            <div className="text-2xl font-bold">{statusCounts.total || totalCount}</div>
             <p className="text-xs text-muted-foreground mt-1">All deliveries</p>
           </CardContent>
         </Card>
@@ -1429,7 +1751,7 @@ export default function DispatchPage() {
             <CheckCircle2 className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{deliveries.filter(d => d.status === 'delivered').length}</div>
+            <div className="text-2xl font-bold">{statusCounts.delivered || 0}</div>
             <p className="text-xs text-muted-foreground mt-1">Completed</p>
           </CardContent>
         </Card>
@@ -1467,6 +1789,10 @@ export default function DispatchPage() {
               <Button variant="outline" onClick={() => setSelectedDeliveries([])}>
                 Clear Selection
               </Button>
+              <Button variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={handleBatchCancel}>
+                <Ban className="h-4 w-4 mr-2" />
+                Cancel Selected
+              </Button>
               <Button onClick={handleAssign}>
                 <UserCheck className="h-4 w-4 mr-2" />
                 Assign Drivers
@@ -1497,18 +1823,54 @@ export default function DispatchPage() {
                 className="pl-9"
               />
             </div>
-            <Select value={dateFilter} onValueChange={(v) => { setDateFilter(v as any); setCurrentPage(1); }}>
-              <SelectTrigger className="w-36">
+            <Select value={dateFilter} onValueChange={(v) => {
+              if (v === 'custom') {
+                setDateFilter('custom');
+                setShowDatePicker(true);
+              } else {
+                setDateFilter(v as any);
+                setCustomDateRange(undefined);
+                setCurrentPage(1);
+              }
+            }}>
+              <SelectTrigger className="w-44">
                 <Calendar className="h-4 w-4 mr-2" />
-                <SelectValue />
+                {dateFilter === 'custom' && customDateRange?.from
+                  ? <span className="text-xs truncate">
+                      {format(customDateRange.from, 'MMM d')}
+                      {customDateRange.to ? ` – ${format(customDateRange.to, 'MMM d')}` : ''}
+                    </span>
+                  : <SelectValue />
+                }
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Time</SelectItem>
                 <SelectItem value="today">Today</SelectItem>
                 <SelectItem value="yesterday">Yesterday</SelectItem>
                 <SelectItem value="last7">Last 7 Days</SelectItem>
+                <SelectItem value="custom">Custom Range…</SelectItem>
               </SelectContent>
             </Select>
+            <Popover open={showDatePicker} onOpenChange={setShowDatePicker}>
+              <PopoverTrigger asChild>
+                <span />
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarPicker
+                  mode="range"
+                  selected={customDateRange}
+                  onSelect={(range) => {
+                    setCustomDateRange(range);
+                    if (range?.from && range?.to) {
+                      setShowDatePicker(false);
+                      setCurrentPage(1);
+                    }
+                  }}
+                  numberOfMonths={2}
+                  disabled={{ after: new Date() }}
+                />
+              </PopoverContent>
+            </Popover>
             <Tabs value={statusFilter} onValueChange={setStatusFilter} className="w-auto">
               <TabsList>
                 <TabsTrigger value="all">All ({deliveries.length})</TabsTrigger>
@@ -1534,23 +1896,44 @@ export default function DispatchPage() {
                     onCheckedChange={handleSelectAll}
                   />
                 </TableHead>
-                <TableHead>Tracking #</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>
+                  <button onClick={() => handleSort('tracking_number')} className="flex items-center hover:text-foreground transition-colors">
+                    Tracking # <SortIcon column="tracking_number" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button onClick={() => handleSort('status')} className="flex items-center hover:text-foreground transition-colors">
+                    Status <SortIcon column="status" />
+                  </button>
+                </TableHead>
                 <TableHead>Payment</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Pickup</TableHead>
                 <TableHead>Dropoff</TableHead>
                 <TableHead>Contact</TableHead>
-                <TableHead>Distance</TableHead>
-                <TableHead>Cost</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>
+                  <button onClick={() => handleSort('distance_km')} className="flex items-center hover:text-foreground transition-colors">
+                    Distance <SortIcon column="distance_km" />
+                  </button>
+                </TableHead>
+                <TableHead>
+                  <button onClick={() => handleSort('total_price')} className="flex items-center hover:text-foreground transition-colors">
+                    Cost <SortIcon column="total_price" />
+                  </button>
+                </TableHead>
+                <TableHead>ETA</TableHead>
+                <TableHead>
+                  <button onClick={() => handleSort('created_at')} className="flex items-center hover:text-foreground transition-colors">
+                    Created <SortIcon column="created_at" />
+                  </button>
+                </TableHead>
                 <TableHead className="w-12"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredDeliveries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
                     <Package className="h-12 w-12 mx-auto mb-3 opacity-50" />
                     <p>No deliveries found</p>
                   </TableCell>
@@ -1629,7 +2012,9 @@ export default function DispatchPage() {
                     <TableCell className="max-w-[150px] truncate text-sm">
                       <div className="flex items-center gap-1">
                         <Navigation className="h-3 w-3 text-red-600 flex-shrink-0" />
-                        {delivery.delivery_address}
+                        {delivery.is_multi_stop
+                          ? <span className="text-indigo-600 font-medium">{delivery.total_stops ?? '?'} stops</span>
+                          : delivery.delivery_address}
                       </div>
                     </TableCell>
                     <TableCell className="text-sm">
@@ -1644,6 +2029,11 @@ export default function DispatchPage() {
                     </TableCell>
                     <TableCell>{(delivery.distance_km || 0).toFixed(1)} km</TableCell>
                     <TableCell className="font-semibold">₱{delivery.total_price || 0}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {delivery.estimated_duration
+                        ? <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatDuration(delivery.estimated_duration)}</span>
+                        : '—'}
+                    </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(delivery.created_at).toLocaleDateString()}
                     </TableCell>
@@ -1667,8 +2057,16 @@ export default function DispatchPage() {
                             onClick={() => handleCopyTrackingLink(delivery.tracking_number)}
                           >
                             <LinkIcon className="h-4 w-4 mr-2" />
-                            Copy Tracking Link
+                            {delivery.is_multi_stop ? 'Copy Sender Link' : 'Copy Tracking Link'}
                           </DropdownMenuItem>
+                          {delivery.is_multi_stop && (
+                            <DropdownMenuItem
+                              onClick={() => handleViewDetails(delivery)}
+                            >
+                              <Copy className="h-4 w-4 mr-2" />
+                              Copy Per-Stop Links…
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             onClick={() => {
                               setSelectedDeliveries([delivery.id]);
@@ -1686,21 +2084,27 @@ export default function DispatchPage() {
                               Reassign Driver
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuItem onClick={() => {
-                            handleViewDetails(delivery);
-                            setTimeout(() => handleStartEdit(), 100);
-                          }}>
-                            <Edit className="h-4 w-4 mr-2" />
-                            Edit Details
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleCancelDelivery(delivery.id)}
-                          >
-                            <X className="h-4 w-4 mr-2" />
-                            Cancel Delivery
-                          </DropdownMenuItem>
+                          {!['delivered', 'cancelled'].includes(delivery.status) && (
+                            <DropdownMenuItem onClick={() => {
+                              handleViewDetails(delivery);
+                              setTimeout(() => handleStartEdit(), 100);
+                            }}>
+                              <Edit className="h-4 w-4 mr-2" />
+                              Edit Details
+                            </DropdownMenuItem>
+                          )}
+                          {!['delivered', 'cancelled'].includes(delivery.status) && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={() => handleCancelDelivery(delivery.id)}
+                              >
+                                <X className="h-4 w-4 mr-2" />
+                                Cancel Delivery
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -2039,7 +2443,9 @@ export default function DispatchPage() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <Label className="text-xs text-muted-foreground">Tracking Number</Label>
+                    <Label className="text-xs text-muted-foreground">
+                      {selectedDeliveryForView!.is_multi_stop ? 'Sender Tracking Number' : 'Tracking Number'}
+                    </Label>
                     <div className="flex items-center gap-2 mt-0.5">
                       <p className="font-mono font-semibold text-lg">{selectedDeliveryForView!.tracking_number}</p>
                       <Button
@@ -2047,7 +2453,7 @@ export default function DispatchPage() {
                         size="icon"
                         className="h-7 w-7"
                         onClick={() => handleCopyTrackingLink(selectedDeliveryForView!.tracking_number)}
-                        title="Copy tracking link"
+                        title={selectedDeliveryForView!.is_multi_stop ? 'Copy sender tracking link (shows all stops)' : 'Copy tracking link'}
                       >
                         {copiedLink ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                       </Button>
@@ -2061,9 +2467,64 @@ export default function DispatchPage() {
                         <ExternalLink className="h-4 w-4" />
                       </a>
                     </div>
+                    {selectedDeliveryForView!.is_multi_stop && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        This link shows all stops — use per-stop links below to share with individual recipients.
+                      </p>
+                    )}
                   </div>
                   {getStatusBadge(selectedDeliveryForView!.status)}
                 </div>
+
+                {/* Per-stop tracking links for multi-stop deliveries */}
+                {selectedDeliveryForView!.is_multi_stop && viewStops.length > 0 && (
+                  <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+                    <Label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                      <LinkIcon className="h-3 w-3" />
+                      Recipient Tracking Links
+                    </Label>
+                    {viewStops.map((stop) => (
+                      <div key={stop.id} className="flex items-center gap-2 text-sm">
+                        <span className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold
+                          ${stop.status === 'completed'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+                            : 'bg-muted text-muted-foreground'
+                          }`}>
+                          {stop.stop_number}
+                        </span>
+                        <span className="flex-1 truncate text-muted-foreground">
+                          {stop.recipient_name || stop.address}
+                        </span>
+                        <code className="text-xs font-mono text-muted-foreground hidden sm:inline">
+                          {stop.tracking_code}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 flex-shrink-0"
+                          onClick={() => handleCopyStopLink(stop)}
+                          title={`Copy private link for Stop ${stop.stop_number}`}
+                          disabled={!stop.tracking_code}
+                        >
+                          {copiedStopId === stop.id ? (
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                        <a
+                          href={`/track/${stop.tracking_code}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-primary flex-shrink-0"
+                          title={`Open Stop ${stop.stop_number} tracking page`}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -2101,21 +2562,41 @@ export default function DispatchPage() {
                   <div className="space-y-4">
                     <div>
                       <Label htmlFor="pickup">Pickup Address</Label>
-                      <Input
-                        id="pickup"
-                        value={editFormData.pickup_address || ''}
-                        onChange={(e) => setEditFormData({ ...editFormData, pickup_address: e.target.value })}
-                        className="mt-1"
-                      />
+                      <div className="mt-1">
+                        <GooglePlacesAutocomplete
+                          id="edit-pickup"
+                          value={editFormData.pickup_address || ''}
+                          onChange={(value) => setEditFormData({ ...editFormData, pickup_address: value })}
+                          onPlaceSelected={(place) => {
+                            setEditFormData({
+                              ...editFormData,
+                              pickup_address: place.address,
+                              pickup_latitude: place.lat,
+                              pickup_longitude: place.lng,
+                            });
+                          }}
+                          placeholder="Search pickup address..."
+                        />
+                      </div>
                     </div>
                     <div>
                       <Label htmlFor="dropoff">Dropoff Address</Label>
-                      <Input
-                        id="dropoff"
-                        value={editFormData.delivery_address || ''}
-                        onChange={(e) => setEditFormData({ ...editFormData, delivery_address: e.target.value })}
-                        className="mt-1"
-                      />
+                      <div className="mt-1">
+                        <GooglePlacesAutocomplete
+                          id="edit-dropoff"
+                          value={editFormData.delivery_address || ''}
+                          onChange={(value) => setEditFormData({ ...editFormData, delivery_address: value })}
+                          onPlaceSelected={(place) => {
+                            setEditFormData({
+                              ...editFormData,
+                              delivery_address: place.address,
+                              delivery_latitude: place.lat,
+                              delivery_longitude: place.lng,
+                            });
+                          }}
+                          placeholder="Search dropoff address..."
+                        />
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
@@ -2189,13 +2670,90 @@ export default function DispatchPage() {
                         <p className="text-sm mt-1">{selectedDeliveryForView!.pickup_address}</p>
                       </div>
                     </div>
-                    <div className="flex gap-3 p-3 bg-red-50 dark:bg-red-950/20 rounded-lg">
-                      <Navigation className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
-                      <div className="flex-1">
-                        <Label className="text-xs text-red-700 dark:text-red-400">Dropoff</Label>
-                        <p className="text-sm mt-1">{selectedDeliveryForView!.delivery_address}</p>
+
+                    {selectedDeliveryForView!.is_multi_stop ? (
+                      <div className="space-y-2">
+                        <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Package className="h-3 w-3" />
+                          {loadingStops ? 'Loading stops…' : `${viewStops.length} Dropoff Stops`}
+                        </Label>
+                        {loadingStops ? (
+                          <div className="flex items-center gap-2 p-3 text-muted-foreground text-sm">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Loading stop details…
+                          </div>
+                        ) : viewStops.length === 0 ? (
+                          <div className="p-3 bg-muted/40 rounded-lg text-sm text-muted-foreground">
+                            No stops found in delivery_stops table.
+                          </div>
+                        ) : (
+                          viewStops.map((stop) => (
+                            <div key={stop.id} className="flex gap-3 p-3 rounded-lg border bg-muted/30">
+                              <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5
+                                ${
+                                  stop.status === 'completed'
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+                                    : stop.status === 'in_progress'
+                                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
+                                    : 'bg-muted text-muted-foreground'
+                                }`}>
+                                {stop.stop_number}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate">{stop.address}</p>
+                                {stop.recipient_name && (
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {stop.recipient_name}{stop.recipient_phone ? ` · ${stop.recipient_phone}` : ''}
+                                  </p>
+                                )}
+                                {stop.delivery_notes && (
+                                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">📌 {stop.delivery_notes}</p>
+                                )}
+                                <div className="flex items-center gap-2 mt-1.5">
+                                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium
+                                    ${
+                                      stop.status === 'completed'
+                                        ? 'bg-green-100 text-green-700'
+                                        : stop.status === 'in_progress'
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : 'bg-muted text-muted-foreground'
+                                    }`}>
+                                    {stop.status === 'completed' ? '✅ Delivered' : stop.status === 'in_progress' ? '🚚 En Route' : '⏳ Pending'}
+                                  </span>
+                                  {stop.completed_at && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {new Date(stop.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {stop.tracking_code && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 flex-shrink-0 mt-0.5"
+                                  onClick={() => handleCopyStopLink(stop)}
+                                  title={`Copy private tracking link for this stop`}
+                                >
+                                  {copiedStopId === stop.id ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                                  ) : (
+                                    <LinkIcon className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
+                              )}
+                            </div>
+                          ))
+                        )}
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex gap-3 p-3 bg-red-50 dark:bg-red-950/20 rounded-lg">
+                        <Navigation className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <Label className="text-xs text-red-700 dark:text-red-400">Dropoff</Label>
+                          <p className="text-sm mt-1">{selectedDeliveryForView!.delivery_address}</p>
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -2437,10 +2995,12 @@ export default function DispatchPage() {
                 <Button variant="outline" onClick={() => setShowDetailsPanel(false)} className="w-full sm:w-auto">
                   Close
                 </Button>
-                <Button onClick={handleStartEdit} className="w-full sm:w-auto">
-                  <Edit className="h-4 w-4 mr-2" />
-                  Edit Details
-                </Button>
+                {selectedDeliveryForView && !['delivered', 'cancelled'].includes(selectedDeliveryForView.status) && (
+                  <Button onClick={handleStartEdit} className="w-full sm:w-auto">
+                    <Edit className="h-4 w-4 mr-2" />
+                    Edit Details
+                  </Button>
+                )}
                 {selectedDeliveryForView?.driver_id ? (
                   <Button
                     variant="outline"
@@ -2678,6 +3238,42 @@ export default function DispatchPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Cancel Confirmation Dialog */}
+      <AlertDialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {cancelTargetIds.length === 1 ? 'Cancel Delivery?' : `Cancel ${cancelTargetIds.length} Deliveries?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {cancelTargetIds.length === 1
+                ? 'This will cancel the delivery. The driver will be unassigned and the customer will be notified. This action cannot be undone.'
+                : `This will cancel ${cancelTargetIds.length} selected deliveries. Drivers will be unassigned and customers will be notified. This action cannot be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBatchCancelling}>Keep</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmCancelDeliveries}
+              disabled={isBatchCancelling}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isBatchCancelling ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                <>
+                  <Ban className="h-4 w-4 mr-2" />
+                  {cancelTargetIds.length === 1 ? 'Cancel Delivery' : `Cancel ${cancelTargetIds.length} Deliveries`}
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

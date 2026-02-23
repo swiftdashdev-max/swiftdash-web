@@ -1,16 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import {
-  Package, Calendar, DollarSign, Truck, Plus, Map, Download, TrendingUp, Clock, CheckCircle, AlertCircle,
-  MapPin, Users, Activity, BarChart3, PieChart, RefreshCw, Navigation, Zap
+  Package, DollarSign, Truck, Map, Download, TrendingUp, TrendingDown, Clock, CheckCircle, AlertCircle,
+  Users, Activity, BarChart3, RefreshCw, Navigation, Zap
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -34,25 +33,9 @@ interface DeliveryStats {
   deliveriesToday: number;
   deliveriesThisWeek: number;
   monthlySpend: number;
-  activeDrivers: number;
-  scheduledDeliveries: number;
+  lastMonthSpend: number;
   activeDeliveries: number;
   completionRate: number;
-  avgDeliveryTime: number;
-}
-
-interface OnlineDriver {
-  id: string;
-  full_name: string;
-  phone: string;
-  current_latitude: number;
-  current_longitude: number;
-  vehicle_model?: string;
-  plate_number?: string;
-  rating: number;
-  total_deliveries: number;
-  location_updated_at: string;
-  employment_type: string;
 }
 
 interface Delivery {
@@ -77,11 +60,9 @@ export default function BusinessDashboard() {
     deliveriesToday: 0,
     deliveriesThisWeek: 0,
     monthlySpend: 0,
-    activeDrivers: 0,
-    scheduledDeliveries: 0,
+    lastMonthSpend: 0,
     activeDeliveries: 0,
     completionRate: 0,
-    avgDeliveryTime: 0,
   });
 
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
@@ -91,7 +72,6 @@ export default function BusinessDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [businessId, setBusinessId] = useState<string | null>(null);
-  const [chartData, setChartData] = useState<any>(null);
   const supabase = createClient();
   const router = useRouter();
 
@@ -142,9 +122,11 @@ export default function BusinessDashboard() {
       weekStart.setDate(today.getDate() - today.getDay());
       const weekStartStr = weekStart.toISOString();
 
-      // Get month start
+      // Get month start & last month range for real growth calc
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthStartStr = monthStart.toISOString();
+      const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0, 23, 59, 59);
 
       // Fetch all deliveries for this business
       const { data: allDeliveries, error: deliveriesError } = await supabase
@@ -208,24 +190,21 @@ export default function BusinessDashboard() {
 
       const monthlyTotal = monthDeliveries.reduce((sum, d) => sum + (d.price || d.total_price || d.total_amount || 0), 0);
       const completionRate = deliveriesWithDrivers.length > 0 ? (completedDelivs.length / deliveriesWithDrivers.length) * 100 : 0;
-      
-      // Calculate average delivery time (mock for now)
-      const avgDeliveryTime = 45; // minutes
 
-      // Get unique active drivers
-      const activeDriverIds = new Set(
-        activeDelivs.filter(d => d.driver_id).map(d => d.driver_id)
-      );
+      // Last month revenue for real growth
+      const lastMonthDeliveries = deliveriesWithDrivers?.filter(d => {
+        const created = new Date(d.created_at);
+        return created >= lastMonthStart && created <= lastMonthEnd;
+      }) || [];
+      const lastMonthTotal = lastMonthDeliveries.reduce((sum, d) => sum + (d.price || d.total_price || d.total_amount || 0), 0);
 
       setStats({
         deliveriesToday: todayDeliveries.length,
         deliveriesThisWeek: weekDeliveries.length,
         monthlySpend: monthlyTotal,
-        activeDrivers: activeDriverIds.size,
-        scheduledDeliveries: scheduledDelivs.length,
+        lastMonthSpend: lastMonthTotal,
         activeDeliveries: activeDelivs.length,
         completionRate,
-        avgDeliveryTime,
       });
 
       // Set active deliveries
@@ -236,29 +215,6 @@ export default function BusinessDashboard() {
         d.status === 'delivered'
       ).slice(0, 5) || [];
       setRecentDeliveries(recentCompleted);
-
-      // Prepare chart data
-      const last7Days = Array.from({ length: 7 }, (_, i) => {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        return {
-          date: date.toISOString().split('T')[0],
-          day: date.toLocaleDateString('en-US', { weekday: 'short' }),
-          deliveries: deliveriesWithDrivers?.filter(d => 
-            d.created_at.split('T')[0] === date.toISOString().split('T')[0]
-          ).length || 0
-        };
-      }).reverse();
-
-      setChartData({
-        weeklyDeliveries: last7Days,
-        statusBreakdown: [
-          { name: 'Completed', value: completedDelivs.length, color: '#22c55e' },
-          { name: 'In Progress', value: activeDelivs.length, color: '#3b82f6' },
-          { name: 'Scheduled', value: scheduledDelivs.length, color: '#f59e0b' },
-        ]
-      });
-
 
 
     } catch (error) {
@@ -299,22 +255,6 @@ export default function BusinessDashboard() {
     setRefreshing(false);
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  const getDriverName = (delivery: Delivery) => {
-    if (!delivery.driver?.user_profile) return 'Unassigned';
-    const { first_name, last_name } = delivery.driver.user_profile;
-    return `${first_name} ${last_name}`;
-  };
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'delivered': return 'text-green-600 bg-green-50';
@@ -352,6 +292,11 @@ export default function BusinessDashboard() {
     );
   }
 
+  // Compute real month-over-month growth
+  const monthGrowth = stats.lastMonthSpend > 0
+    ? ((stats.monthlySpend - stats.lastMonthSpend) / stats.lastMonthSpend) * 100
+    : stats.monthlySpend > 0 ? 100 : 0;
+
   return (
     <div className="container mx-auto px-4 py-8 space-y-6">
       {/* Header */}
@@ -359,7 +304,7 @@ export default function BusinessDashboard() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground">
-            Welcome back! Here's what's happening with your business.
+            Your delivery performance at a glance.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -374,22 +319,22 @@ export default function BusinessDashboard() {
             Refresh
           </Button>
           <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-green-50 text-sm">
-            <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
-            Live Updates
+            <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse" />
+            Live
           </div>
         </div>
       </div>
 
-      {/* Key Metrics */}
+      {/* Key Metrics – single row of 4 */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"
+        className="grid gap-4 grid-cols-2 lg:grid-cols-4"
       >
         <Card className="relative overflow-hidden">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Deliveries Today</CardTitle>
+            <CardTitle className="text-sm font-medium">Today</CardTitle>
             <Package className="h-4 w-4 text-blue-600" />
           </CardHeader>
           <CardContent>
@@ -398,7 +343,43 @@ export default function BusinessDashboard() {
               {stats.deliveriesThisWeek} this week
             </p>
           </CardContent>
-          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-blue-400"></div>
+          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-blue-400" />
+        </Card>
+
+        <Card className="relative overflow-hidden">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Active</CardTitle>
+            <Activity className="h-4 w-4 text-green-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.activeDeliveries}</div>
+            <p className="text-xs text-muted-foreground">
+              In progress right now
+            </p>
+          </CardContent>
+          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-green-600 to-green-400" />
+        </Card>
+
+        <Card className="relative overflow-hidden">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Monthly Revenue</CardTitle>
+            <DollarSign className="h-4 w-4 text-orange-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">₱{stats.monthlySpend.toLocaleString()}</div>
+            <p className="text-xs text-muted-foreground flex items-center">
+              {monthGrowth >= 0 ? (
+                <TrendingUp className="h-3 w-3 text-green-500 mr-1" />
+              ) : (
+                <TrendingDown className="h-3 w-3 text-red-500 mr-1" />
+              )}
+              <span className={monthGrowth >= 0 ? 'text-green-600' : 'text-red-600'}>
+                {monthGrowth >= 0 ? '+' : ''}{monthGrowth.toFixed(1)}%
+              </span>
+              <span className="ml-1">vs last month</span>
+            </p>
+          </CardContent>
+          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-orange-600 to-orange-400" />
         </Card>
 
         <Card className="relative overflow-hidden">
@@ -409,242 +390,146 @@ export default function BusinessDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.completionRate.toFixed(1)}%</div>
             <p className="text-xs text-muted-foreground">
-              Avg delivery time: {stats.avgDeliveryTime}m
+              All-time success rate
             </p>
           </CardContent>
-          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-purple-600 to-purple-400"></div>
-        </Card>
-
-        <Card className="relative overflow-hidden">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Monthly Revenue</CardTitle>
-            <DollarSign className="h-4 w-4 text-orange-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">₱{stats.monthlySpend.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">
-              <TrendingUp className="inline h-3 w-3 mr-1" />
-              +12% from last month
-            </p>
-          </CardContent>
-          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-orange-600 to-orange-400"></div>
+          <div className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-purple-600 to-purple-400" />
         </Card>
       </motion.div>
 
-
-
-      {/* Charts and Analytics */}
+      {/* Charts – rendered directly, no wrapper card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.3 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
       >
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5 text-purple-600" />
-              Analytics Overview
-            </CardTitle>
-            <CardDescription>
-              Performance insights and trends
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {chartData && <DynamicCharts deliveries={deliveries} drivers={[]} isLoading={loading} />}
-          </CardContent>
-        </Card>
+        <DynamicCharts deliveries={deliveries} drivers={[]} isLoading={loading} />
       </motion.div>
 
-      {/* Quick Actions */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.4 }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-            <CardDescription>Common tasks and shortcuts</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Button
-                variant="outline"
-                className="h-auto py-4 flex-col gap-2 hover:bg-blue-50 hover:border-blue-200 transition-colors"
-                asChild
-              >
-                <Link href="/business/orders">
-                  <Package className="h-6 w-6 text-blue-600" />
-                  <span className="text-sm font-medium">New Delivery</span>
-                </Link>
-              </Button>
-              <Button 
-                variant="outline" 
-                className="h-auto py-4 flex-col gap-2 hover:bg-green-50 hover:border-green-200 transition-colors"
-                asChild
-              >
-                <Link href="/business/dispatch">
-                  <Zap className="h-6 w-6 text-green-600" />
-                  <span className="text-sm font-medium">Dispatch</span>
-                </Link>
-              </Button>
-              <Button 
-                variant="outline" 
-                className="h-auto py-4 flex-col gap-2 hover:bg-purple-50 hover:border-purple-200 transition-colors"
-                asChild
-              >
-                <Link href="/business/tracking">
-                  <Map className="h-6 w-6 text-purple-600" />
-                  <span className="text-sm font-medium">Live Tracking</span>
-                </Link>
-              </Button>
-              <Button 
-                variant="outline" 
-                className="h-auto py-4 flex-col gap-2 hover:bg-orange-50 hover:border-orange-200 transition-colors"
-                asChild
-              >
-                <Link href="/business/reports">
-                  <Download className="h-6 w-6 text-orange-600" />
-                  <span className="text-sm font-medium">Reports</span>
-                </Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
+      {/* Quick Actions + Active Deliveries – side by side on desktop */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Quick Actions */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.3 }}
+        >
+          <Card className="h-full">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Quick Actions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  className="h-auto py-3 flex-col gap-1.5 hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                  asChild
+                >
+                  <Link href="/business/orders">
+                    <Package className="h-5 w-5 text-blue-600" />
+                    <span className="text-xs font-medium">New Delivery</span>
+                  </Link>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-auto py-3 flex-col gap-1.5 hover:bg-green-50 hover:border-green-200 transition-colors"
+                  asChild
+                >
+                  <Link href="/business/dispatch">
+                    <Zap className="h-5 w-5 text-green-600" />
+                    <span className="text-xs font-medium">Dispatch</span>
+                  </Link>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-auto py-3 flex-col gap-1.5 hover:bg-purple-50 hover:border-purple-200 transition-colors"
+                  asChild
+                >
+                  <Link href="/business/tracking">
+                    <Map className="h-5 w-5 text-purple-600" />
+                    <span className="text-xs font-medium">Live Tracking</span>
+                  </Link>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-auto py-3 flex-col gap-1.5 hover:bg-orange-50 hover:border-orange-200 transition-colors"
+                  asChild
+                >
+                  <Link href="/business/reports">
+                    <Download className="h-5 w-5 text-orange-600" />
+                    <span className="text-xs font-medium">Reports</span>
+                  </Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-      {/* Active & Recent Deliveries */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.5 }}
-      >
-        <Tabs defaultValue="active" className="space-y-4">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="active" className="flex items-center gap-2">
-              <Activity className="h-4 w-4" />
-              Active ({activeDeliveries.length})
-            </TabsTrigger>
-            <TabsTrigger value="recent" className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4" />
-              Recent ({recentDeliveries.length})
-            </TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="active" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>Active Deliveries</CardTitle>
-                    <CardDescription>Track your ongoing deliveries</CardDescription>
+        {/* Active Deliveries */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.4 }}
+          className="lg:col-span-2"
+        >
+          <Card className="h-full">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-blue-600" />
+                    Active Deliveries
+                  </CardTitle>
+                  <CardDescription>In-progress deliveries</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/business/dispatch">
+                    View All
+                  </Link>
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {activeDeliveries.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <Package className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+                    <p className="text-sm">No active deliveries</p>
+                    <Button variant="link" size="sm" asChild className="mt-1">
+                      <Link href="/business/orders">Create one →</Link>
+                    </Button>
                   </div>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link href="/business/tracking">
-                      <Map className="mr-2 h-4 w-4" />
-                      View All
-                    </Link>
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {activeDeliveries.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
-                      <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                      <p>No active deliveries</p>
-                      <Button variant="link" asChild className="mt-2">
-                        <Link href="/business/orders">Create your first delivery</Link>
-                      </Button>
-                    </div>
-                  ) : (
-                    activeDeliveries.map((delivery) => (
-                      <div
-                        key={delivery.id}
-                        className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
-                      >
-                        <div className="flex items-center gap-4">
-                          <div className={`p-2 rounded-lg ${getStatusColor(delivery.status)}`}>
-                            {getStatusIcon(delivery.status)}
-                          </div>
-                          <div>
-                            <div className="font-medium">{delivery.id.slice(0, 8).toUpperCase()}</div>
-                            <div className="text-sm text-gray-600">
-                              {delivery.pickup_address} → {delivery.delivery_address}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              Driver: {getDriverName(delivery)} • {formatDate(delivery.created_at)}
-                            </div>
-                          </div>
+                ) : (
+                  activeDeliveries.map((delivery) => (
+                    <div
+                      key={delivery.id}
+                      className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`p-1.5 rounded-md ${getStatusColor(delivery.status)}`}>
+                          {getStatusIcon(delivery.status)}
                         </div>
-                        <div className="text-right">
-                          <div className="font-semibold">₱{(delivery.price || delivery.total_price || delivery.total_amount || 0).toFixed(2)}</div>
-                          <Badge variant="outline" className={`mt-1 ${getStatusColor(delivery.status)}`}>
-                            {delivery.status.replace('_', ' ')}
-                          </Badge>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">{delivery.id.slice(0, 8).toUpperCase()}</div>
+                          <div className="text-xs text-muted-foreground truncate max-w-[300px]">
+                            {delivery.pickup_address} → {delivery.delivery_address}
+                          </div>
                         </div>
                       </div>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-          
-          <TabsContent value="recent" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Deliveries</CardTitle>
-                <CardDescription>Your delivery history</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {recentDeliveries.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
-                      <CheckCircle className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                      <p>No completed deliveries yet</p>
-                    </div>
-                  ) : (
-                    recentDeliveries.map((delivery) => (
-                      <div 
-                        key={delivery.id}
-                        className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
-                      >
-                        <div className="flex items-center gap-4">
-                          <div className={`p-2 rounded-lg ${getStatusColor(delivery.status)}`}>
-                            {getStatusIcon(delivery.status)}
-                          </div>
-                          <div>
-                            <div className="font-medium">{delivery.id.slice(0, 8).toUpperCase()}</div>
-                            <div className="text-sm text-gray-600">
-                              {delivery.pickup_address} → {delivery.delivery_address}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              {formatDate(delivery.created_at)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-semibold">₱{(delivery.price || delivery.total_price || delivery.total_amount || 0).toFixed(2)}</div>
-                          <Badge className="mt-1 bg-green-100 text-green-800 hover:bg-green-100">
-                            <CheckCircle className="h-3 w-3 mr-1" />
-                            Delivered
-                          </Badge>
-                        </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <div className="text-sm font-semibold">₱{(delivery.price || delivery.total_price || delivery.total_amount || 0).toFixed(0)}</div>
+                        <Badge variant="outline" className={`text-xs ${getStatusColor(delivery.status)}`}>
+                          {delivery.status.replace(/_/g, ' ')}
+                        </Badge>
                       </div>
-                    ))
-                  )}
-                </div>
-                <div className="mt-4 text-center">
-                  <Button variant="outline" asChild>
-                    <Link href="/business/tracking">View All Deliveries</Link>
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-      </motion.div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
     </div>
   );
 }

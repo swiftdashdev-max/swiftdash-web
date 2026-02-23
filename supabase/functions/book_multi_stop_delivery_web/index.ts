@@ -257,24 +257,12 @@ serve(async (req) => {
       .select("id")
       .limit(1);
 
+    let insertedStops: any[] = [];
+
     if (!tableCheckErr) {
-      // Create pickup stop (stop_number = 0)
-      const pickupStop = {
-        delivery_id: delivery.id,
-        stop_number: 0,
-        stop_type: 'pickup',
-        address: body.pickup.address,
-        latitude: body.pickup.location.lat,
-        longitude: body.pickup.location.lng,
-        recipient_name: body.pickup.contactName,
-        recipient_phone: body.pickup.contactPhone,
-        delivery_notes: body.pickup.instructions || null,
-        status: 'pending',
-      };
-
-      await supabase.from("delivery_stops").insert(pickupStop);
-
-      // Create dropoff stops
+      // Insert all dropoff stops (stop_number 1..N)
+      // Pickup is NOT inserted as a delivery_stop row — it lives on the deliveries record.
+      // The DB has CHECK (stop_number > 0) so stop_number=0 would violate the constraint.
       const dropoffStopRecords = body.dropoffStops.map((stop: any, index: number) => ({
         delivery_id: delivery.id,
         stop_number: index + 1,
@@ -290,7 +278,7 @@ serve(async (req) => {
         status: 'pending',
       }));
 
-      const { data: insertedStops, error: stopsErr } = await supabase
+      const { data: stopsData, error: stopsErr } = await supabase
         .from("delivery_stops")
         .insert(dropoffStopRecords)
         .select('stop_number, tracking_code, recipient_name, recipient_phone, address');
@@ -298,7 +286,8 @@ serve(async (req) => {
       if (stopsErr) {
         console.error("⚠️ Warning: Failed to create delivery stops:", stopsErr);
       } else {
-        console.log(`✅ Created ${body.dropoffStops.length + 1} delivery stops with tracking codes`);
+        insertedStops = stopsData || [];
+        console.log(`✅ Created ${insertedStops.length} dropoff stops with tracking codes`);
       }
     } else {
       console.log("ℹ️ delivery_stops table not available, skipping stop records");

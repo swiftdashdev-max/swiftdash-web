@@ -80,6 +80,9 @@ export default function PricingPage() {
             <Link href="/pricing" className="text-sm font-medium text-primary transition-colors">
               Pricing
             </Link>
+            <Link href="/track" className="text-sm font-medium text-muted-foreground hover:text-primary transition-colors">
+              Track Delivery
+            </Link>
           </nav>
 
           <div className="flex items-center gap-4">
@@ -113,6 +116,9 @@ export default function PricingPage() {
               </Link>
               <Link href="/pricing" className="text-primary font-medium py-2" onClick={() => setIsMenuOpen(false)}>
                 Pricing
+              </Link>
+              <Link href="/track" className="text-muted-foreground hover:text-foreground py-2" onClick={() => setIsMenuOpen(false)}>
+                Track Delivery
               </Link>
               <Link href="/login" className="text-muted-foreground hover:text-foreground py-2" onClick={() => setIsMenuOpen(false)}>
                 Login

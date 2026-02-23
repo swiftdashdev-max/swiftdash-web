@@ -6,7 +6,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { createClient } from '@/lib/supabase/client';
-import { useDriverLocation } from '@/lib/ably-client';
+import { useInterpolatedDriverLocation } from '@/lib/ably-client';
 import { DriverMarker } from '@/components/driver-marker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -41,6 +41,21 @@ if (!mapboxgl.accessToken) {
   console.error('NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN is not set');
 }
 
+interface DeliveryStop {
+  id: string;
+  stop_number: number;
+  stop_type: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  delivery_notes: string | null;
+  status: string;
+  completed_at: string | null;
+  tracking_code: string | null;
+}
+
 interface DeliveryData {
   id: string;
   tracking_number: string;
@@ -60,6 +75,7 @@ interface DeliveryData {
   distance_km: number | null;
   customer_rating: number | null;
   is_multi_stop?: boolean;
+  stops?: DeliveryStop[];
   stop_info?: {
     stop_number: number;
     recipient_name: string | null;
@@ -181,7 +197,7 @@ export default function TrackingPage() {
 
   // Subscribe to driver location updates via Ably
   const shouldTrackDriver = delivery?.status && ['driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit'].includes(delivery.status);
-  const { location: driverLocation, isConnected: driverConnected } = useDriverLocation(
+  const { location: driverLocation, isConnected: driverConnected } = useInterpolatedDriverLocation(
     shouldTrackDriver ? delivery?.id || null : null
   );
 
@@ -262,12 +278,13 @@ export default function TrackingPage() {
 
         // Parse tracking code to detect stop-specific tracking
         // Format: SD-20241218-abc123 (full delivery) or SD-20241218-abc123-1 (stop 1)
-        const stopMatch = trackingNumber.match(/^(.+)-(\d+)$/);
+        // Stop numbers are 1-2 digits; the hex hash portion can be 8+ chars so we limit stop to 1-2 digits
+        const stopMatch = trackingNumber.match(/^(.+)-(\d{1,2})$/);
         const isStopSpecific = !!stopMatch;
         const parentTrackingNumber = stopMatch ? stopMatch[1] : trackingNumber;
         const stopNumber = stopMatch ? parseInt(stopMatch[2]) : null;
 
-        // Fetch delivery using parent tracking number
+        // Fetch delivery using parent tracking number (case-insensitive)
         const { data, error } = await supabase
           .from('deliveries')
           .select(`
@@ -292,11 +309,11 @@ export default function TrackingPage() {
             business_id,
             is_multi_stop
           `)
-          .eq('tracking_number', parentTrackingNumber)
-          .single();
+          .ilike('tracking_number', parentTrackingNumber)
+          .maybeSingle();
 
         if (error) throw error;
-        if (!data) throw new Error('Delivery not found');
+        if (!data) throw new Error('We could not find a delivery with this tracking number. Please check and try again.');
 
         // If stop-specific tracking, fetch and filter to that stop only
         let stopData = null;
@@ -334,6 +351,17 @@ export default function TrackingPage() {
           }
         }
 
+        // For full multi-stop delivery links (not stop-specific), fetch all stops
+        let allStops: DeliveryStop[] = [];
+        if (!isStopSpecific && data.is_multi_stop) {
+          const { data: stopsData } = await supabase
+            .from('delivery_stops')
+            .select('id,stop_number,stop_type,address,latitude,longitude,recipient_name,recipient_phone,delivery_notes,status,completed_at,tracking_code')
+            .eq('delivery_id', data.id)
+            .order('stop_number', { ascending: true });
+          allStops = stopsData || [];
+        }
+
         // Fetch business branding
         const { data: businessData } = await supabase
           .from('business_accounts')
@@ -367,6 +395,7 @@ export default function TrackingPage() {
 
         const deliveryData: DeliveryData = {
           ...data,
+          stops: allStops.length > 0 ? allStops : undefined,
           stop_info: stopData ? {
             stop_number: stopData.stop_number,
             recipient_name: stopData.recipient_name,
@@ -399,7 +428,13 @@ export default function TrackingPage() {
         setDelivery(deliveryData);
       } catch (err: any) {
         console.error('Error fetching delivery:', err);
-        setError(err.message || 'Failed to load tracking information');
+        // Show user-friendly error messages instead of raw database errors
+        const rawMsg = err.message || '';
+        if (rawMsg.includes('not find a delivery') || rawMsg.includes('not found') || rawMsg.includes('Stop not found')) {
+          setError(rawMsg);
+        } else {
+          setError('We could not find a delivery with this tracking number. Please check and try again.');  
+        }
       } finally {
         setLoading(false);
       }
@@ -408,7 +443,7 @@ export default function TrackingPage() {
     fetchDelivery();
 
     // Parse tracking code for subscription
-    const stopMatch = trackingNumber.match(/^(.+)-(\d+)$/);
+    const stopMatch = trackingNumber.match(/^(.+)-(\d{1,2})$/);
     const isStopSpecific = !!stopMatch;
     const parentTrackingNumber = stopMatch ? stopMatch[1] : trackingNumber;
     const stopNumber = stopMatch ? parseInt(stopMatch[2]) : null;
@@ -577,27 +612,57 @@ export default function TrackingPage() {
             .addTo(map);
           pickupMarkerRef.current = pickupMarker;
 
-          // Add delivery marker with pin styling (matching order page)
-          const deliveryEl = document.createElement('div');
-          deliveryEl.className = 'delivery-marker';
-          deliveryEl.style.width = '40px';
-          deliveryEl.style.height = '40px';
-          deliveryEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23ef4444\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%23ef4444\'/%3E%3C/svg%3E")';
-          deliveryEl.style.backgroundSize = 'contain';
-          deliveryEl.style.cursor = 'pointer';
-
-          const deliveryMarker = new mapboxgl.Marker({ element: deliveryEl, anchor: 'bottom' })
-            .setLngLat([delivery.delivery_longitude, delivery.delivery_latitude])
-            .setPopup(
-              new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Delivery</strong><br/>' + delivery.delivery_address)
-            )
-            .addTo(map);
-          deliveryMarkerRef.current = deliveryMarker;
-
-          // Fit bounds to show both markers
+          // Fit bounds to show all markers
           const bounds = new mapboxgl.LngLatBounds();
           bounds.extend([delivery.pickup_longitude, delivery.pickup_latitude]);
-          bounds.extend([delivery.delivery_longitude, delivery.delivery_latitude]);
+
+          // For multi-stop: add numbered stop markers
+          if (delivery.is_multi_stop && delivery.stops && delivery.stops.length > 0) {
+            delivery.stops.forEach((stop) => {
+              if (!stop.latitude || !stop.longitude) return;
+              const isCompleted = stop.status === 'completed';
+              const isActive = stop.status === 'in_progress';
+              const pinColor = isCompleted ? '#10b981' : isActive ? '#3b82f6' : '#ef4444';
+              const encodedColor = encodeURIComponent(pinColor);
+              const stopEl = document.createElement('div');
+              stopEl.style.width = '32px';
+              stopEl.style.height = '40px';
+              stopEl.style.cursor = 'pointer';
+              stopEl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 24 30">
+                <path d="M12 0C7.6 0 4 3.6 4 8c0 6 8 16 8 16s8-10 8-16c0-4.4-3.6-8-8-8z" fill="${pinColor}" />
+                <circle cx="12" cy="8" r="4.5" fill="white" />
+                <text x="12" y="12" text-anchor="middle" font-size="6.5" font-weight="bold" font-family="sans-serif" fill="${pinColor}">${stop.stop_number}</text>
+              </svg>`;
+              new mapboxgl.Marker({ element: stopEl, anchor: 'bottom' })
+                .setLngLat([stop.longitude, stop.latitude])
+                .setPopup(
+                  new mapboxgl.Popup({ offset: 25 }).setHTML(
+                    `<strong>Stop ${stop.stop_number}</strong><br/>${stop.address}${stop.recipient_name ? `<br/><em>${stop.recipient_name}</em>` : ''}`
+                  )
+                )
+                .addTo(map);
+              bounds.extend([stop.longitude, stop.latitude]);
+            });
+          } else {
+            // Single delivery marker
+            const deliveryEl = document.createElement('div');
+            deliveryEl.className = 'delivery-marker';
+            deliveryEl.style.width = '40px';
+            deliveryEl.style.height = '40px';
+            deliveryEl.style.backgroundImage = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'40\' height=\'40\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23ef4444\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z\'/%3E%3Ccircle cx=\'12\' cy=\'10\' r=\'3\' fill=\'%23ef4444\'/%3E%3C/svg%3E")';
+            deliveryEl.style.backgroundSize = 'contain';
+            deliveryEl.style.cursor = 'pointer';
+
+            const deliveryMarker = new mapboxgl.Marker({ element: deliveryEl, anchor: 'bottom' })
+              .setLngLat([delivery.delivery_longitude, delivery.delivery_latitude])
+              .setPopup(
+                new mapboxgl.Popup({ offset: 25 }).setHTML('<strong>Delivery</strong><br/>' + delivery.delivery_address)
+              )
+              .addTo(map);
+            deliveryMarkerRef.current = deliveryMarker;
+            bounds.extend([delivery.delivery_longitude, delivery.delivery_latitude]);
+          }
+
           map.fitBounds(bounds, { padding: 50 });
           
           // Add route layer source (will be updated when driver location changes)
@@ -838,15 +903,27 @@ export default function TrackingPage() {
   if (error || !delivery) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
-        <Card className="max-w-md w-full">
-          <CardContent className="pt-6">
+        <Card className="max-w-md w-full shadow-lg">
+          <CardContent className="pt-8 pb-8">
             <div className="text-center">
-              <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+              <div className="mx-auto w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-5">
+                <AlertCircle className="h-8 w-8 text-red-500" />
+              </div>
               <h2 className="text-xl font-semibold mb-2">Tracking Not Found</h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-4">
+              <p className="text-gray-600 dark:text-gray-400 mb-2">
                 {error || 'We could not find a delivery with this tracking number.'}
               </p>
-              <p className="text-sm text-gray-500">Tracking Number: {trackingNumber}</p>
+              <p className="text-sm text-gray-500 font-mono bg-gray-100 dark:bg-gray-800 inline-block px-3 py-1 rounded-lg mb-6">
+                {trackingNumber}
+              </p>
+              <div className="space-y-3">
+                <Button asChild className="w-full" variant="default">
+                  <a href="/track">Try Another Tracking Number</a>
+                </Button>
+                <p className="text-xs text-gray-400">
+                  Tip: Check for typos or paste the number directly from your SMS or email.
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -854,19 +931,126 @@ export default function TrackingPage() {
     );
   }
 
-  // Block access to completed/cancelled deliveries
+  // Show a polished completion page for delivered/cancelled deliveries
   if (delivery.status === 'delivered' || delivery.status === 'cancelled') {
+    const isDelivered = delivery.status === 'delivered';
+    const businessName = delivery.business_branding?.business_name || 'SwiftDash';
+    const completedDate = delivery.completed_at
+      ? new Date(delivery.completed_at).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        })
+      : null;
+    const completedTime = delivery.completed_at
+      ? new Date(delivery.completed_at).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        })
+      : null;
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
-        <Card className="max-w-md w-full">
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <CheckCircle2 className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h2 className="text-xl font-semibold mb-2">Tracking Expired</h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-4">
-                This delivery has been completed and tracking is no longer available.
-              </p>
-              <p className="text-sm text-gray-500">Tracking Number: {trackingNumber}</p>
+        <Card className="max-w-md w-full shadow-lg overflow-hidden">
+          {/* Colored header bar */}
+          <div
+            className={`px-6 py-8 text-center ${
+              isDelivered
+                ? 'bg-gradient-to-br from-green-500 to-emerald-600'
+                : 'bg-gradient-to-br from-gray-400 to-gray-500'
+            }`}
+          >
+            <div className="mx-auto w-16 h-16 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center mb-4">
+              {isDelivered ? (
+                <CheckCircle2 className="h-9 w-9 text-white" />
+              ) : (
+                <AlertCircle className="h-9 w-9 text-white" />
+              )}
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-1">
+              {isDelivered ? 'Delivery Complete' : 'Delivery Cancelled'}
+            </h2>
+            <p className="text-white/80 text-sm">
+              {isDelivered
+                ? delivery.business_branding?.delivered_message || 'Your package has been successfully delivered!'
+                : 'This delivery was cancelled.'}
+            </p>
+          </div>
+
+          <CardContent className="pt-6 pb-8">
+            <div className="space-y-4">
+              {/* Tracking number */}
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-gray-500 dark:text-gray-400">Tracking Number</span>
+                <span className="text-sm font-mono font-medium bg-gray-100 dark:bg-gray-800 px-2.5 py-1 rounded">
+                  {delivery.tracking_number}
+                </span>
+              </div>
+
+              {/* Business */}
+              {delivery.business_branding && (
+                <div className="flex items-center justify-between py-2 border-t border-gray-100 dark:border-gray-800">
+                  <span className="text-sm text-gray-500 dark:text-gray-400">Delivered by</span>
+                  <span className="text-sm font-medium">{businessName}</span>
+                </div>
+              )}
+
+              {/* Delivered to */}
+              <div className="flex items-center justify-between py-2 border-t border-gray-100 dark:border-gray-800">
+                <span className="text-sm text-gray-500 dark:text-gray-400">Delivered to</span>
+                <span className="text-sm font-medium text-right max-w-[200px] truncate" title={delivery.delivery_address}>
+                  {delivery.delivery_address}
+                </span>
+              </div>
+
+              {/* Completion date/time */}
+              {completedDate && (
+                <div className="flex items-center justify-between py-2 border-t border-gray-100 dark:border-gray-800">
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
+                    {isDelivered ? 'Delivered on' : 'Cancelled on'}
+                  </span>
+                  <div className="text-right">
+                    <p className="text-sm font-medium">{completedDate}</p>
+                    {completedTime && (
+                      <p className="text-xs text-gray-400">{completedTime}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Support section */}
+              {(delivery.business_branding?.support_email || delivery.business_branding?.support_phone) && (
+                <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-xs text-gray-400 text-center mb-3">Need help with this delivery?</p>
+                  <div className="flex gap-2 justify-center">
+                    {delivery.business_branding.support_phone && (
+                      <Button asChild variant="outline" size="sm">
+                        <a href={`tel:${delivery.business_branding.support_phone}`}>
+                          <Phone className="h-3.5 w-3.5 mr-1.5" />
+                          Call
+                        </a>
+                      </Button>
+                    )}
+                    {delivery.business_branding.support_email && (
+                      <Button asChild variant="outline" size="sm">
+                        <a href={`mailto:${delivery.business_branding.support_email}`}>
+                          <Mail className="h-3.5 w-3.5 mr-1.5" />
+                          Email
+                        </a>
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer message */}
+              {delivery.business_branding?.footer_message && (
+                <p className="text-xs text-gray-400 text-center pt-2 border-t border-gray-100 dark:border-gray-800">
+                  {delivery.business_branding.footer_message}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1235,35 +1419,104 @@ export default function TrackingPage() {
                 </p>
               </div>
               )}
-              
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <Navigation className="h-4 w-4 text-red-600" />
+
+              {/* Multi-stop: show all stops */}
+              {delivery.is_multi_stop && delivery.stops && delivery.stops.length > 0 ? (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Navigation className="h-4 w-4 text-purple-600" />
                     <h4 className="text-xs font-semibold text-gray-500">
-                      Delivery {delivery.stop_info && `(Stop ${delivery.stop_info.stop_number})`}
+                      Delivery Stops ({delivery.stops.length})
                     </h4>
                   </div>
-                  <a
-                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(delivery.delivery_address)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md active:scale-95 transition-all"
-                    style={{ backgroundColor: `${accentColor}15`, color: accentColor }}
-                  >
-                    <Navigation className="h-3 w-3" />
-                    Maps
-                  </a>
+                  <div className="ml-2 space-y-2 relative">
+                    {/* Vertical connector */}
+                    <div className="absolute left-[5px] top-3 bottom-3 w-0.5 bg-gradient-to-b from-purple-300 via-blue-300 to-red-300" />
+                    {delivery.stops.map((stop, idx) => {
+                      const isCompleted = stop.status === 'completed';
+                      const isActive = stop.status === 'in_progress';
+                      return (
+                        <div key={stop.id} className="relative flex items-start gap-3 pl-5">
+                          <div className={`absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                            isCompleted ? 'bg-emerald-500' : isActive ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`} />
+                          <div className="flex-1 pb-1 border-b border-gray-100 dark:border-gray-800 last:border-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                Stop {stop.stop_number}
+                                {idx === delivery.stops!.length - 1 && (
+                                  <span className="text-red-500 ml-1">· Final</span>
+                                )}
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                                  isCompleted ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                  : isActive ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                  : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                                }`}>
+                                  {isCompleted ? '✓ Delivered' : isActive ? '● Active' : 'Pending'}
+                                </span>
+                                <a
+                                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.address)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+                                  style={{ backgroundColor: `${accentColor}15`, color: accentColor }}
+                                >
+                                  <Navigation className="h-2.5 w-2.5" />
+                                  Map
+                                </a>
+                              </div>
+                            </div>
+                            <p className="text-xs text-gray-700 dark:text-gray-200 mt-0.5 leading-snug">{stop.address}</p>
+                            {stop.recipient_name && (
+                              <p className="text-xs text-gray-500 mt-0.5">For: {stop.recipient_name}</p>
+                            )}
+                            {stop.delivery_notes && (
+                              <p className="text-xs text-gray-400 italic mt-0.5">{stop.delivery_notes}</p>
+                            )}
+                            {isCompleted && stop.completed_at && (
+                              <p className="text-[10px] text-emerald-600 mt-0.5">
+                                Delivered at {new Date(stop.completed_at).toLocaleTimeString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                <p className="text-sm text-gray-700 dark:text-gray-300 ml-6">
-                  {delivery.delivery_address}
-                </p>
-                {delivery.stop_info?.recipient_name && (
-                  <p className="text-xs text-gray-500 ml-6 mt-1">
-                    For: {delivery.stop_info.recipient_name}
+              ) : (
+                /* Single-stop or stop-specific view */
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <Navigation className="h-4 w-4 text-red-600" />
+                      <h4 className="text-xs font-semibold text-gray-500">
+                        Delivery {delivery.stop_info && `(Stop ${delivery.stop_info.stop_number})`}
+                      </h4>
+                    </div>
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(delivery.delivery_address)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md active:scale-95 transition-all"
+                      style={{ backgroundColor: `${accentColor}15`, color: accentColor }}
+                    >
+                      <Navigation className="h-3 w-3" />
+                      Maps
+                    </a>
+                  </div>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 ml-6">
+                    {delivery.delivery_address}
                   </p>
-                )}
-              </div>
+                  {delivery.stop_info?.recipient_name && (
+                    <p className="text-xs text-gray-500 ml-6 mt-1">
+                      For: {delivery.stop_info.recipient_name}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <Separator />

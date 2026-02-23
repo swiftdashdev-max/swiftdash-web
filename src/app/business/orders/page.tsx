@@ -282,7 +282,7 @@ export default function OrdersPage() {
     try {
       setIsSubmitting(true);
 
-      // Validation - vehicle assignment will happen in dispatch page
+      // Validation
       if (!pickupLocation.address || !pickupLocation.lat || !pickupLocation.lng) {
         throw new Error('Please select a pickup location');
       }
@@ -296,10 +296,27 @@ export default function OrdersPage() {
         throw new Error('Please enter dropoff contact information');
       }
 
-      console.log('📦 Creating delivery via direct database insert');
+      // Validate all stops for multi-stop
+      if (deliveryType === 'multi') {
+        if (dropoffStops.length < 2) {
+          throw new Error('Multi-stop delivery requires at least 2 dropoff stops');
+        }
+        for (let i = 0; i < dropoffStops.length; i++) {
+          const stop = dropoffStops[i];
+          if (!stop.address || !stop.lat || !stop.lng) {
+            throw new Error(`Please select an address for stop ${i + 1}`);
+          }
+          if (!stop.contactName || !stop.contactPhone) {
+            throw new Error(`Please enter contact information for stop ${i + 1}`);
+          }
+        }
+      }
 
-      // Direct database insert - orders created without vehicle assignment
-      const deliveryData = {
+      const isMultiStop = deliveryType === 'multi';
+
+      console.log(`📦 Creating ${isMultiStop ? 'multi-stop' : 'single'} delivery`);
+
+      const deliveryData: Record<string, unknown> = {
         business_id: businessId,
         customer_id: userId,
         status: 'pending',
@@ -312,7 +329,7 @@ export default function OrdersPage() {
         pickup_contact_phone: pickupLocation.contactPhone,
         pickup_instructions: pickupLocation.instructions || null,
         
-        // Dropoff (first stop)
+        // Dropoff — always store first stop on the delivery row
         delivery_address: dropoffStops[0].address,
         delivery_latitude: dropoffStops[0].lat,
         delivery_longitude: dropoffStops[0].lng,
@@ -320,12 +337,17 @@ export default function OrdersPage() {
         delivery_contact_phone: dropoffStops[0].contactPhone,
         delivery_instructions: dropoffStops[0].instructions || null,
         
+        // Multi-stop flags
+        is_multi_stop: isMultiStop,
+        total_stops: isMultiStop ? dropoffStops.length : 1,
+        current_stop_index: 0,
+        
         // Package
         package_description: packageDetails.description || 'Package delivery',
         package_weight: packageDetails.weight || null,
         package_value: packageDetails.value || null,
         
-        // Payment - will be set during dispatch
+        // Payment — set during dispatch
         payment_by: null,
         payment_method: null,
         payment_status: 'pending',
@@ -334,12 +356,12 @@ export default function OrdersPage() {
         distance_km: routeDistance || null,
         estimated_duration: routeDuration || null,
         
-        // Vehicle assignment - null until dispatch assigns
+        // Vehicle / driver — assigned during dispatch
         vehicle_type_id: null,
         driver_id: null,
         fleet_vehicle_id: null,
         
-        // Pricing - will be calculated during dispatch
+        // Pricing — calculated during dispatch
         total_price: null,
         delivery_fee: null,
         total_amount: null,
@@ -360,12 +382,38 @@ export default function OrdersPage() {
         throw new Error(insertError.message || 'Failed to create delivery');
       }
       
-      console.log('✅ Delivery created:', createdDelivery);
+      const deliveryId = createdDelivery?.id;
+      console.log('✅ Delivery created:', deliveryId);
 
-      // Extract delivery ID from response (structure may vary)
-      const deliveryId = createdDelivery?.delivery?.id || createdDelivery?.id;
-      
-      // Redirect to dispatch page for vehicle/driver assignment
+      // Insert delivery_stops rows for multi-stop orders
+      if (isMultiStop && deliveryId) {
+        const stopRows = dropoffStops.map((stop, idx) => ({
+          delivery_id: deliveryId,
+          stop_number: idx + 1,
+          stop_type: 'dropoff',
+          address: stop.address,
+          latitude: stop.lat,
+          longitude: stop.lng,
+          recipient_name: stop.contactName || null,
+          recipient_phone: stop.contactPhone || null,
+          delivery_notes: stop.instructions || null,
+          status: 'pending',
+        }));
+
+        const { error: stopsError } = await supabase
+          .from('delivery_stops')
+          .insert(stopRows);
+
+        if (stopsError) {
+          console.error('⚠️ Failed to insert delivery_stops:', stopsError);
+          // Don't throw — the delivery is created, stops are secondary
+          // Dispatch page will show warning
+        } else {
+          console.log(`✅ Inserted ${stopRows.length} delivery stops`);
+        }
+      }
+
+      // Redirect to dispatch page
       router.push('/business/dispatch');
 
     } catch (error) {

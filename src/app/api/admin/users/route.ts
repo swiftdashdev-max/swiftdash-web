@@ -295,3 +295,69 @@ export async function GET() {
     )
   }
 }
+
+// PATCH endpoint to update a user's email and/or password
+export async function PATCH(request: NextRequest) {
+  try {
+    const { userId, email, password } = await request.json()
+
+    if (!userId) {
+      return NextResponse.json(
+        { error: 'Missing required field: userId' },
+        { status: 400 }
+      )
+    }
+
+    if (!email && !password) {
+      return NextResponse.json(
+        { error: 'Nothing to update — provide email and/or password' },
+        { status: 400 }
+      )
+    }
+
+    if (password && password.length < 6) {
+      return NextResponse.json(
+        { error: 'Password must be at least 6 characters' },
+        { status: 400 }
+      )
+    }
+
+    // Build update payload
+    const updatePayload: { email?: string; password?: string; email_confirm?: boolean } = {}
+    if (email) {
+      updatePayload.email = email
+      updatePayload.email_confirm = true // Auto-confirm so driver can log in immediately
+    }
+    if (password) {
+      updatePayload.password = password
+    }
+
+    const { data, error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+      userId,
+      updatePayload
+    )
+
+    if (updateError) {
+      console.error('Error updating user auth:', updateError)
+      return NextResponse.json(
+        { error: updateError.message },
+        { status: 500 }
+      )
+    }
+
+    console.log('✅ User auth updated:', { userId, emailUpdated: !!email, passwordUpdated: !!password })
+
+    return NextResponse.json({
+      success: true,
+      message: 'User updated successfully',
+      user: { id: data.user.id, email: data.user.email },
+    })
+
+  } catch (error) {
+    console.error('API error updating user:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

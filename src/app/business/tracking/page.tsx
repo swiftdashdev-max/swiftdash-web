@@ -1,12 +1,12 @@
 ﻿'use client';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 import { useQuery } from '@tanstack/react-query';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { createClient } from '@/lib/supabase/client';
-import { useMultipleDriverLocations, useAblyConnectionState } from '@/lib/ably-client';
+import { useInterpolatedMultipleDriverLocations, useAblyConnectionState } from '@/lib/ably-client';
 import { useUserContext } from '@/lib/supabase/user-context';
 import { DriverMarker } from '@/components/driver-marker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,7 @@ import {
   Navigation,
   Clock,
   User,
+  Users,
   Phone,
   Loader2,
   RefreshCw,
@@ -42,6 +43,11 @@ import {
   Tag,
   Filter,
   TrendingUp,
+  Car,
+  Wifi,
+  WifiOff,
+  CheckCircle2,
+  ArrowRight,
 } from 'lucide-react';
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
@@ -79,6 +85,21 @@ const saveMapState = (center: [number, number], zoom: number) => {
   }
 };
 
+interface DeliveryStop {
+  id: string;
+  stop_number: number;
+  stop_type: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  recipient_name: string | null;
+  recipient_phone: string | null;
+  delivery_notes: string | null;
+  status: string;
+  completed_at: string | null;
+  tracking_code: string | null;
+}
+
 interface DeliveryWithDriver {
   id: string;
   status: string;
@@ -94,6 +115,7 @@ interface DeliveryWithDriver {
   updated_at: string;
   driver_id: string | null;
   business_id: string;
+  is_multi_stop?: boolean;
   driver_profiles?: {
     id: string;
     profile_picture_url: string | null;
@@ -101,7 +123,7 @@ interface DeliveryWithDriver {
       full_name: string;
       phone_number: string | null;
       profile_image_url: string | null;
-    }[];
+    };
   };
 }
 
@@ -111,6 +133,23 @@ interface DriverLocation {
   heading?: number;
   speed?: number;
   timestamp: number;
+}
+
+interface OnlineDriver {
+  id: string;
+  is_online: boolean;
+  is_available: boolean;
+  current_latitude: number | null;
+  current_longitude: number | null;
+  location_updated_at: string | null;
+  vehicle_model: string | null;
+  vehicle_plate: string | null;
+  color: string | null;
+  full_name: string;
+  phone_number: string | null;
+  profile_image_url: string | null;
+  // whether this driver has an active delivery right now
+  hasActiveDelivery?: boolean;
 }
 
 // MarkerInterpolator Class for Smooth Animations
@@ -228,7 +267,7 @@ export default function TrackingPage() {
   const { businessId, loading: userLoading } = useUserContext();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
-  const markersRef = useRef<Map<string, { marker: mapboxgl.Marker; interpolator: MarkerInterpolator }>>(new Map());
+  const markersRef = useRef<Map<string, { marker: mapboxgl.Marker; interpolator: MarkerInterpolator; root: Root }>>(new Map());
   const pickupMarkersRef = useRef<Map<string, mapboxgl.Marker>>(new Map());
   const dropoffMarkersRef = useRef<Map<string, mapboxgl.Marker>>(new Map());
   const routeLayersRef = useRef<Set<string>>(new Set());
@@ -243,8 +282,17 @@ export default function TrackingPage() {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [isCanceling, setIsCanceling] = useState(false);
+  const [deliveryStops, setDeliveryStops] = useState<DeliveryStop[]>([]);
+  const [loadingStops, setLoadingStops] = useState(false);
   const routeDataRef = useRef<Map<string, { distance: number; duration: number }>>(new Map());
   const [, forceUpdate] = useState({});
+
+  // Fleet view state
+  const [showFleetView, setShowFleetView] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<'deliveries' | 'drivers'>('deliveries');
+  const [selectedFleetDriver, setSelectedFleetDriver] = useState<OnlineDriver | null>(null);
+  const [fleetDriverDetailsOpen, setFleetDriverDetailsOpen] = useState(false);
+  const idleMarkersRef = useRef<Map<string, mapboxgl.Marker>>(new Map());
 
   // Fetch active deliveries with React Query
   const { data: deliveries = [], isLoading, refetch } = useQuery({
@@ -322,10 +370,91 @@ export default function TrackingPage() {
 
   const loading = isLoading || userLoading;
 
+  // Fetch online drivers for fleet view
+  const { data: onlineDrivers = [], refetch: refetchDrivers } = useQuery({
+    queryKey: ['online-drivers', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+
+      // Query drivers managed by this business directly via managed_by_business_id
+      // Also union with drivers who have active deliveries for this business (independent drivers)
+      const { data: profiles, error } = await supabase
+        .from('driver_profiles')
+        .select('id, is_online, is_available, current_latitude, current_longitude, location_updated_at, vehicle_model, plate_number, managed_by_business_id')
+        .eq('managed_by_business_id', businessId)
+        .eq('is_online', true);
+
+      if (error) throw error;
+
+      // Also fetch independent drivers currently on active deliveries for this business
+      const { data: activeDeliveryDriverRows } = await supabase
+        .from('deliveries')
+        .select('driver_id')
+        .eq('business_id', businessId)
+        .in('status', ['driver_assigned','going_to_pickup','pickup_arrived','package_collected','in_transit','at_destination'])
+        .not('driver_id', 'is', null);
+
+      const managedIds = new Set((profiles || []).map((p: { id: string }) => p.id));
+      const activeIds = (activeDeliveryDriverRows || [])
+        .map((r: { driver_id: string }) => r.driver_id)
+        .filter((id: string) => id && !managedIds.has(id));
+
+      let combinedProfiles = [...(profiles || [])];
+
+      if (activeIds.length > 0) {
+        const { data: activeProfiles } = await supabase
+          .from('driver_profiles')
+          .select('id, is_online, is_available, current_latitude, current_longitude, location_updated_at, vehicle_model, plate_number, managed_by_business_id')
+          .in('id', activeIds)
+          .eq('is_online', true);
+        if (activeProfiles) combinedProfiles = [...combinedProfiles, ...activeProfiles];
+      }
+
+      if (combinedProfiles.length === 0) return [];
+
+      const allDriverIds = combinedProfiles.map((p: { id: string }) => p.id);
+
+      const { data: userProfiles } = await supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name, phone_number, profile_image_url')
+        .in('id', allDriverIds);
+
+      const userMap = new Map((userProfiles || []).map((u: { id: string; first_name: string | null; last_name: string | null; phone_number: string | null; profile_image_url: string | null }) => [
+        u.id,
+        {
+          full_name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'Unknown Driver',
+          phone_number: u.phone_number,
+          profile_image_url: u.profile_image_url,
+        },
+      ]));
+
+      return combinedProfiles.map((p: { id: string; is_online: boolean; is_available: boolean; current_latitude: number | null; current_longitude: number | null; location_updated_at: string | null; vehicle_model: string | null; plate_number: string | null; managed_by_business_id: string | null }) => {
+        const up = userMap.get(p.id) || { full_name: 'Unknown Driver', phone_number: null, profile_image_url: null };
+        return {
+          id: p.id,
+          is_online: p.is_online,
+          is_available: p.is_available,
+          current_latitude: p.current_latitude,
+          current_longitude: p.current_longitude,
+          location_updated_at: p.location_updated_at,
+          vehicle_model: p.vehicle_model,
+          vehicle_plate: p.plate_number,
+          color: null,
+          full_name: up.full_name,
+          phone_number: up.phone_number,
+          profile_image_url: up.profile_image_url,
+        } as OnlineDriver;
+      });
+    },
+    enabled: !!businessId && !userLoading && showFleetView,
+    staleTime: 20000,
+    refetchInterval: showFleetView ? 30000 : false,
+  });
+
   // Ably real-time connection
   const { isConnected } = useAblyConnectionState();
   const deliveryIds = deliveries.map(d => d.id);
-  const { locations: driverLocations } = useMultipleDriverLocations(deliveryIds);
+  const { locations: driverLocations } = useInterpolatedMultipleDriverLocations(deliveryIds);
 
   // Real-time subscription for delivery status changes
   useEffect(() => {
@@ -353,6 +482,129 @@ export default function TrackingPage() {
       supabase.removeChannel(channel);
     };
   }, [businessId, refetch]);
+
+  // Real-time subscription for delivery_stops changes (multi-stop progress)
+  useEffect(() => {
+    if (!selectedDelivery?.is_multi_stop || !selectedDelivery?.id) return;
+
+    const stopsChannel = supabase
+      .channel(`tracking-stops-${selectedDelivery.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'delivery_stops',
+          filter: `delivery_id=eq.${selectedDelivery.id}`,
+        },
+        (payload) => {
+          console.log('🔄 Stop status updated:', payload);
+          // Update the specific stop in state
+          setDeliveryStops(prev =>
+            prev.map(stop =>
+              stop.id === (payload.new as any).id
+                ? { ...stop, status: (payload.new as any).status, completed_at: (payload.new as any).completed_at }
+                : stop
+            )
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(stopsChannel);
+    };
+  }, [selectedDelivery?.id, selectedDelivery?.is_multi_stop]);
+
+  // Manage idle driver markers on the map
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+
+    // Remove all idle markers when fleet view is off
+    if (!showFleetView) {
+      idleMarkersRef.current.forEach(m => m.remove());
+      idleMarkersRef.current.clear();
+      return;
+    }
+
+    // Active delivery driver IDs (already shown with Ably real-time)
+    const activeDriverIds = new Set(deliveries.map(d => d.driver_id).filter(Boolean) as string[]);
+
+    // Remove markers for drivers no longer online / now active
+    idleMarkersRef.current.forEach((marker, driverId) => {
+      const stillIdle = onlineDrivers.find(d => d.id === driverId && !activeDriverIds.has(driverId));
+      if (!stillIdle) {
+        marker.remove();
+        idleMarkersRef.current.delete(driverId);
+      }
+    });
+
+    // Add/update idle driver markers
+    onlineDrivers.forEach(driver => {
+      if (activeDriverIds.has(driver.id)) return; // already shown via Ably
+      if (!driver.current_latitude || !driver.current_longitude) return;
+
+      const staleSecs = driver.location_updated_at
+        ? Math.floor((Date.now() - new Date(driver.location_updated_at).getTime()) / 1000)
+        : null;
+
+      const staleLabel = staleSecs === null
+        ? 'No location'
+        : staleSecs < 60
+          ? `${staleSecs}s ago`
+          : staleSecs < 3600
+            ? `${Math.floor(staleSecs / 60)}m ago`
+            : `${Math.floor(staleSecs / 3600)}h ago`;
+
+      // Determine freshness color: green <5m, yellow <30m, grey >30m
+      const isStale = staleSecs !== null && staleSecs > 1800;
+      const isWarm = staleSecs !== null && staleSecs > 300;
+      const dotColor = isStale ? '%236b7280' : isWarm ? '%23f59e0b' : '%2322c55e';
+
+      if (idleMarkersRef.current.has(driver.id)) {
+        // Just update position
+        idleMarkersRef.current.get(driver.id)!.setLngLat([driver.current_longitude, driver.current_latitude]);
+        return;
+      }
+
+      // Create a new idle marker (grey car icon + name label)
+      const el = document.createElement('div');
+      el.className = 'idle-driver-marker';
+      el.style.cssText = 'display:flex;flex-direction:column;align-items:center;cursor:pointer;';
+
+      const initials = driver.full_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
+
+      el.innerHTML = `
+        <div style="
+          width:40px;height:40px;border-radius:50%;background:#e5e7eb;
+          border:3px solid #9ca3af;display:flex;align-items:center;justify-content:center;
+          font-weight:700;font-size:13px;color:#374151;font-family:Inter,sans-serif;
+          box-shadow:0 2px 8px rgba(0,0,0,0.2);
+        ">${initials}</div>
+        <div style="
+          margin-top:3px;background:rgba(255,255,255,0.92);border:1px solid #d1d5db;
+          border-radius:8px;padding:2px 6px;font-size:10px;font-weight:600;
+          color:#374151;font-family:Inter,sans-serif;white-space:nowrap;
+          box-shadow:0 1px 4px rgba(0,0,0,0.12);
+        ">
+          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor.replace(/%23/g,'#')};margin-right:3px;vertical-align:middle;"></span>
+          ${staleLabel}
+        </div>
+      `;
+
+      el.addEventListener('click', () => {
+        setSelectedFleetDriver({ ...driver, hasActiveDelivery: false });
+        setFleetDriverDetailsOpen(true);
+      });
+
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+        .setLngLat([driver.current_longitude, driver.current_latitude])
+        .addTo(map);
+
+      idleMarkersRef.current.set(driver.id, marker);
+    });
+  }, [showFleetView, onlineDrivers, deliveries]);
 
   // Initialize map (only once, cached across navigations)
   useEffect(() => {
@@ -475,8 +727,42 @@ export default function TrackingPage() {
       hasValidBounds = true;
     }
 
-    // Add dropoff marker for selected delivery
-    if (selectedDelivery.delivery_latitude && selectedDelivery.delivery_longitude) {
+    // Add stop markers for multi-stop deliveries, or single dropoff marker
+    if (selectedDelivery.is_multi_stop && deliveryStops.length > 0) {
+      deliveryStops.forEach((stop) => {
+        if (!stop.latitude || !stop.longitude) return;
+        const stopId = `stop-${stop.id}`;
+        const isCompleted = stop.status === 'completed';
+        const isActive = stop.status === 'in_progress';
+        const pinColor = isCompleted ? '%2310b981' : isActive ? '%233b82f6' : '%23ef4444';
+        const fillColor = isCompleted ? '%2310b981' : isActive ? '%233b82f6' : '%23ef4444';
+        const el = document.createElement('div');
+        el.className = 'stop-marker';
+        el.style.width = '32px';
+        el.style.height = '40px';
+        el.style.position = 'relative';
+        el.style.cursor = 'pointer';
+        el.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 24 30">
+            <path d="M12 0C7.6 0 4 3.6 4 8c0 6 8 16 8 16s8-10 8-16c0-4.4-3.6-8-8-8z" fill="${decodeURIComponent(pinColor)}" />
+            <circle cx="12" cy="8" r="4" fill="white" />
+            <text x="12" y="12" text-anchor="middle" font-size="6" font-weight="bold" fill="${decodeURIComponent(fillColor)}">${stop.stop_number}</text>
+          </svg>`;
+
+        const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat([stop.longitude, stop.latitude])
+          .setPopup(
+            new mapboxgl.Popup({ offset: 25 })
+              .setHTML(`<strong>Stop ${stop.stop_number}</strong><br/>${stop.address}${stop.recipient_name ? `<br/><em>${stop.recipient_name}</em>` : ''}`)
+          )
+          .addTo(map);
+
+        dropoffMarkersRef.current.set(stopId, marker);
+        bounds.extend([stop.longitude, stop.latitude]);
+        hasValidBounds = true;
+      });
+    } else if (selectedDelivery.delivery_latitude && selectedDelivery.delivery_longitude) {
+      // Single dropoff marker
       const dropoffId = `dropoff-${selectedDelivery.id}`;
       const el = document.createElement('div');
       el.className = 'dropoff-marker';
@@ -505,7 +791,7 @@ export default function TrackingPage() {
       isProgrammaticMoveRef.current = true;
       map.fitBounds(bounds, { padding: 100, maxZoom: 15 });
     }
-  }, [selectedDelivery]);
+  }, [selectedDelivery, deliveryStops]);
 
   // Update driver markers with real-time locations
   useEffect(() => {
@@ -757,6 +1043,41 @@ export default function TrackingPage() {
     return labels[status] || status;
   };
 
+  // Ordered status steps for the timeline
+  const STATUS_TIMELINE_STEPS = [
+    { key: 'driver_assigned', label: 'Driver Assigned', icon: Truck },
+    { key: 'going_to_pickup', label: 'Going to Pickup', icon: Navigation },
+    { key: 'pickup_arrived', label: 'Arrived at Pickup', icon: MapPin },
+    { key: 'package_collected', label: 'Package Collected', icon: Package },
+    { key: 'in_transit', label: 'In Transit', icon: Navigation },
+    { key: 'delivered', label: 'Delivered', icon: CheckCircle2 },
+  ];
+
+  // For multi-stop: simplified parent status flow
+  const MULTI_STOP_PARENT_STEPS = [
+    { key: 'driver_assigned', label: 'Driver Assigned', icon: Truck },
+    { key: 'going_to_pickup', label: 'Going to Pickup', icon: Navigation },
+    { key: 'pickup_arrived', label: 'At Pickup', icon: MapPin },
+    { key: 'package_collected', label: 'Collected', icon: Package },
+    { key: 'in_transit', label: 'Delivering Stops', icon: Navigation },
+    { key: 'delivered', label: 'All Stops Delivered', icon: CheckCircle2 },
+  ];
+
+  const getTimelineStepIndex = (status: string, steps: { key: string }[]) => {
+    // Map alias statuses to canonical keys
+    const aliasMap: Record<string, string> = {
+      'arrived_at_pickup': 'pickup_arrived',
+      'picked_up': 'package_collected',
+      'going_to_dropoff': 'in_transit',
+      'arrived_at_dropoff': 'delivered',
+      'dropoff_arrived': 'delivered',
+      'at_destination': 'delivered',
+    };
+    const canonical = aliasMap[status] || status;
+    const idx = steps.findIndex(s => s.key === canonical);
+    return idx >= 0 ? idx : -1;
+  };
+
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -798,6 +1119,21 @@ export default function TrackingPage() {
       alert('Failed to cancel delivery. Please try again.');
     } finally {
       setIsCanceling(false);
+    }
+  };
+
+  const fetchStopsForDelivery = async (deliveryId: string) => {
+    setLoadingStops(true);
+    setDeliveryStops([]);
+    try {
+      const { data, error } = await supabase
+        .from('delivery_stops')
+        .select('id,stop_number,stop_type,address,latitude,longitude,recipient_name,recipient_phone,delivery_notes,status,completed_at,tracking_code')
+        .eq('delivery_id', deliveryId)
+        .order('stop_number', { ascending: true });
+      if (!error && data) setDeliveryStops(data);
+    } finally {
+      setLoadingStops(false);
     }
   };
 
@@ -887,17 +1223,38 @@ export default function TrackingPage() {
               {deliveries.length} Active Deliveries
             </Badge>
           )}
+          {showFleetView && onlineDrivers.length > 0 && (
+            <Badge className="ml-1 bg-emerald-100 text-emerald-700 border-emerald-200">
+              <Users className="h-3 w-3 mr-1" />
+              {onlineDrivers.length} Online
+            </Badge>
+          )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => refetch()}
-          disabled={isLoading}
-          className="hover:bg-gray-50 dark:hover:bg-gray-700"
-        >
-          {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          <span className="ml-2">Refresh</span>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={showFleetView ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => {
+              setShowFleetView(v => !v);
+              if (!showFleetView) setSidebarTab('drivers');
+              else setSidebarTab('deliveries');
+            }}
+            className={showFleetView ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}
+          >
+            <Users className="h-4 w-4" />
+            <span className="ml-2">{showFleetView ? 'Fleet View On' : 'Fleet View'}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { refetch(); if (showFleetView) refetchDrivers(); }}
+            disabled={isLoading}
+            className="hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            <span className="ml-2">Refresh</span>
+          </Button>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -911,7 +1268,36 @@ export default function TrackingPage() {
         >
           {sidebarOpen && (
             <>
+              {/* Tab Switcher (only when fleet view is on) */}
+              {showFleetView && (
+                <div className="flex border-b dark:border-gray-700">
+                  <button
+                    onClick={() => setSidebarTab('deliveries')}
+                    className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+                      sidebarTab === 'deliveries'
+                        ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-gray-800'
+                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 bg-gray-50 dark:bg-gray-900'
+                    }`}
+                  >
+                    <Truck className="h-4 w-4 inline mr-1.5" />
+                    Deliveries ({deliveries.length})
+                  </button>
+                  <button
+                    onClick={() => setSidebarTab('drivers')}
+                    className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+                      sidebarTab === 'drivers'
+                        ? 'border-b-2 border-emerald-600 text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-800'
+                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 bg-gray-50 dark:bg-gray-900'
+                    }`}
+                  >
+                    <Users className="h-4 w-4 inline mr-1.5" />
+                    Drivers ({onlineDrivers.length})
+                  </button>
+                </div>
+              )}
+
               {/* Sidebar Header */}
+              {sidebarTab === 'deliveries' && (
               <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900 space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Active Deliveries</h2>
@@ -969,8 +1355,10 @@ export default function TrackingPage() {
                   ))}
                 </div>
               </div>
+              )}
 
-              {/* Sidebar Content */}
+              {/* Sidebar Content — Deliveries tab */}
+              {sidebarTab === 'deliveries' && (
               <div className="flex-1 overflow-y-auto">
                 {loading ? (
                   <div className="flex items-center justify-center h-64">
@@ -1006,7 +1394,7 @@ export default function TrackingPage() {
                       const routeInfo = routeDataRef.current.get(delivery.id);
                       const etaMin = routeInfo ? Math.round(routeInfo.duration / 60) : null;
                       const distKm = routeInfo ? (routeInfo.distance / 1000).toFixed(1) : null;
-                      const trackingNum = (delivery as any).tracking_number;
+                      const trackingNum = (delivery as any).tracking_number as string | undefined;
 
                       return (
                         <Card
@@ -1060,10 +1448,19 @@ export default function TrackingPage() {
                                   <div className="w-2 h-2 rounded-full bg-green-500 mt-1.5 flex-shrink-0" />
                                   <p className="text-xs text-gray-600 dark:text-gray-300 truncate leading-snug">{delivery.pickup_address}</p>
                                 </div>
-                                <div className="flex items-start gap-2">
-                                  <div className="w-2 h-2 rounded-full bg-red-500 mt-1.5 flex-shrink-0" />
-                                  <p className="text-xs text-gray-600 dark:text-gray-300 truncate leading-snug">{delivery.delivery_address}</p>
-                                </div>
+                                {delivery.is_multi_stop ? (
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-purple-500 mt-0.5 flex-shrink-0" />
+                                    <span className="text-xs font-medium text-purple-600 dark:text-purple-400">
+                                      Multi-stop delivery
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-start gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-red-500 mt-1.5 flex-shrink-0" />
+                                    <p className="text-xs text-gray-600 dark:text-gray-300 truncate leading-snug">{delivery.delivery_address}</p>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Driver + live indicator */}
@@ -1099,6 +1496,7 @@ export default function TrackingPage() {
                                       e.stopPropagation();
                                       setSelectedDelivery(delivery);
                                       setDetailsOpen(true);
+                                      if (delivery.is_multi_stop) fetchStopsForDelivery(delivery.id);
                                     }}
                                     className="h-6 w-6 p-0 hover:bg-white dark:hover:bg-gray-600"
                                   >
@@ -1114,6 +1512,101 @@ export default function TrackingPage() {
                   </div>
                 )}
               </div>
+              )}
+
+              {/* Sidebar Content — Drivers tab */}
+              {sidebarTab === 'drivers' && (
+              <div className="flex-1 overflow-y-auto">
+                {onlineDrivers.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-64 text-center p-6">
+                    <Users className="h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" />
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">No Online Drivers</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Drivers will appear here when they go online</p>
+                  </div>
+                ) : (
+                  <div className="p-4 space-y-3">
+                    {onlineDrivers.map((driver) => {
+                      const activeDriverIds = new Set(deliveries.map(d => d.driver_id).filter(Boolean));
+                      const isOnDelivery = activeDriverIds.has(driver.id);
+                      const staleSecs = driver.location_updated_at
+                        ? Math.floor((Date.now() - new Date(driver.location_updated_at).getTime()) / 1000)
+                        : null;
+                      const staleLabel = staleSecs === null
+                        ? 'No location'
+                        : staleSecs < 60
+                          ? `${staleSecs}s ago`
+                          : staleSecs < 3600
+                            ? `${Math.floor(staleSecs / 60)}m ago`
+                            : `${Math.floor(staleSecs / 3600)}h ago`;
+                      const initials = driver.full_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
+
+                      return (
+                        <Card
+                          key={driver.id}
+                          className="cursor-pointer hover:shadow-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
+                          onClick={() => {
+                            setSelectedFleetDriver(driver);
+                            setFleetDriverDetailsOpen(true);
+                            // Fly to driver on map if they have a location
+                            if (driver.current_latitude && driver.current_longitude && mapRef.current) {
+                              isProgrammaticMoveRef.current = true;
+                              mapRef.current.flyTo({
+                                center: [driver.current_longitude, driver.current_latitude],
+                                zoom: 15,
+                                duration: 800,
+                              });
+                            }
+                          }}
+                        >
+                          <CardContent className="p-3">
+                            <div className="flex items-center gap-3">
+                              {/* Avatar */}
+                              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 text-sm font-bold text-gray-600 dark:text-gray-300">
+                                {initials}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="font-medium text-sm text-gray-900 dark:text-white truncate">{driver.full_name}</p>
+                                  {isOnDelivery ? (
+                                    <Badge className="text-[10px] bg-blue-100 text-blue-700 border-blue-200 shrink-0">On Delivery</Badge>
+                                  ) : driver.is_available ? (
+                                    <Badge className="text-[10px] bg-emerald-100 text-emerald-700 border-emerald-200 shrink-0">Available</Badge>
+                                  ) : (
+                                    <Badge className="text-[10px] bg-gray-100 text-gray-600 border-gray-200 shrink-0">Busy</Badge>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  {driver.vehicle_model && (
+                                    <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                      <Car className="h-3 w-3 inline mr-0.5" />
+                                      {driver.vehicle_model}{driver.vehicle_plate ? ` · ${driver.vehicle_plate}` : ''}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1 mt-1">
+                                  {isOnDelivery ? (
+                                    <Circle className="h-2 w-2 fill-blue-500 text-blue-500 animate-pulse" />
+                                  ) : staleSecs !== null && staleSecs < 300 ? (
+                                    <Circle className="h-2 w-2 fill-green-500 text-green-500" />
+                                  ) : staleSecs !== null && staleSecs < 1800 ? (
+                                    <Circle className="h-2 w-2 fill-yellow-500 text-yellow-500" />
+                                  ) : (
+                                    <Circle className="h-2 w-2 fill-gray-400 text-gray-400" />
+                                  )}
+                                  <span className="text-xs text-gray-400 dark:text-gray-500">
+                                    {isOnDelivery ? 'Live tracking' : `Last seen ${staleLabel}`}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              )}
             </>
           )}
         </div>
@@ -1280,8 +1773,15 @@ export default function TrackingPage() {
                   <h3 className="font-semibold mb-3 flex items-center gap-2 text-gray-900 dark:text-white">
                     <MapPin className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                     Route Details
+                    {selectedDelivery.is_multi_stop && (
+                      <span className="ml-auto text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 px-2 py-0.5 rounded-full">
+                        Multi-Stop
+                      </span>
+                    )}
                   </h3>
-                  <div className="space-y-3">
+
+                  {/* Pickup */}
+                  <div className="space-y-2">
                     <Card>
                       <CardContent className="p-4">
                         <div className="flex items-start gap-3">
@@ -1293,22 +1793,119 @@ export default function TrackingPage() {
                         </div>
                       </CardContent>
                     </Card>
-                    
-                    <div className="flex justify-center">
-                      <div className="w-0.5 h-8 bg-gradient-to-b from-green-500 to-red-500"></div>
-                    </div>
-                    
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="flex items-start gap-3">
-                          <div className="w-3 h-3 bg-red-500 rounded-full mt-2 flex-shrink-0"></div>
-                          <div className="flex-1">
-                            <p className="text-sm font-medium text-red-700 dark:text-red-400 mb-1">Delivery Location</p>
-                            <p className="text-gray-800 dark:text-gray-200">{selectedDelivery.delivery_address}</p>
+
+                    {/* Multi-stop stops list */}
+                    {selectedDelivery.is_multi_stop && (
+                      loadingStops ? (
+                        <div className="flex items-center gap-2 py-3 justify-center text-sm text-gray-500">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading stops...
+                        </div>
+                      ) : deliveryStops.length > 0 ? (
+                        <div className="relative pl-4">
+                          {/* Vertical connector line */}
+                          <div className="absolute left-[13px] top-0 bottom-0 w-0.5 bg-gradient-to-b from-green-400 via-blue-400 to-red-400" />
+                          <div className="space-y-2">
+                            {deliveryStops.map((stop, idx) => {
+                              const isCompleted = stop.status === 'completed';
+                              const isActive = stop.status === 'in_progress';
+                              const dotColor = isCompleted ? 'bg-emerald-500' : isActive ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600';
+                              const cardBg = isCompleted
+                                ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20'
+                                : isActive
+                                  ? 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'
+                                  : '';
+                              return (
+                                <Card key={stop.id} className={`ml-4 ${cardBg}`}>
+                                  <CardContent className="p-3">
+                                    <div className="flex items-start gap-2">
+                                      <div className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${dotColor}`} />
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                            Stop {stop.stop_number}
+                                            {idx === deliveryStops.length - 1 && (
+                                              <span className="ml-1 text-red-600">· Final</span>
+                                            )}
+                                          </p>
+                                          <Badge
+                                            className={`text-[10px] py-0 px-1.5 flex-shrink-0 ${
+                                              isCompleted ? 'bg-emerald-100 text-emerald-700'
+                                              : isActive ? 'bg-blue-100 text-blue-700'
+                                              : 'bg-gray-100 text-gray-600'
+                                            }`}
+                                          >
+                                            {isCompleted ? 'Delivered' : isActive ? 'Active' : 'Pending'}
+                                          </Badge>
+                                        </div>
+                                        <p className="text-xs text-gray-700 dark:text-gray-200 mt-0.5 leading-snug">{stop.address}</p>
+                                        {stop.recipient_name && (
+                                          <p className="text-xs text-gray-500 mt-0.5">For: {stop.recipient_name}</p>
+                                        )}
+                                        {stop.recipient_phone && (
+                                          <p className="text-xs text-gray-500">
+                                            <Phone className="h-2.5 w-2.5 inline mr-0.5" />{stop.recipient_phone}
+                                          </p>
+                                        )}
+                                        {stop.delivery_notes && (
+                                          <p className="text-xs text-gray-400 italic mt-0.5">{stop.delivery_notes}</p>
+                                        )}
+                                        {stop.tracking_code && (
+                                          <p className="text-[10px] font-mono text-gray-400 mt-0.5">#{stop.tracking_code}</p>
+                                        )}
+                                        {isCompleted && stop.completed_at && (
+                                          <p className="text-[10px] text-emerald-600 mt-0.5">
+                                            Completed {new Date(stop.completed_at).toLocaleTimeString()}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
                           </div>
                         </div>
-                      </CardContent>
-                    </Card>
+                      ) : (
+                        /* Fallback: no stops data yet, show single destination */
+                        <>
+                          <div className="flex justify-center">
+                            <div className="w-0.5 h-6 bg-gradient-to-b from-green-500 to-red-500" />
+                          </div>
+                          <Card>
+                            <CardContent className="p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="w-3 h-3 bg-red-500 rounded-full mt-2 flex-shrink-0"></div>
+                                <div className="flex-1">
+                                  <p className="text-sm font-medium text-red-700 dark:text-red-400 mb-1">Delivery Location</p>
+                                  <p className="text-gray-800 dark:text-gray-200">{selectedDelivery.delivery_address}</p>
+                                </div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </>
+                      )
+                    )}
+
+                    {/* Single-stop fallback */}
+                    {!selectedDelivery.is_multi_stop && (
+                      <>
+                        <div className="flex justify-center">
+                          <div className="w-0.5 h-8 bg-gradient-to-b from-green-500 to-red-500"></div>
+                        </div>
+                        <Card>
+                          <CardContent className="p-4">
+                            <div className="flex items-start gap-3">
+                              <div className="w-3 h-3 bg-red-500 rounded-full mt-2 flex-shrink-0"></div>
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-red-700 dark:text-red-400 mb-1">Delivery Location</p>
+                                <p className="text-gray-800 dark:text-gray-200">{selectedDelivery.delivery_address}</p>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -1336,26 +1933,157 @@ export default function TrackingPage() {
                   </Card>
                 </div>
 
-                {/* Timeline */}
+                {/* Status Timeline */}
                 <div>
                   <h3 className="font-semibold mb-3 flex items-center gap-2 text-gray-900 dark:text-white">
                     <Clock className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                    Timeline
+                    Status Timeline
                   </h3>
                   <Card>
-                    <CardContent className="p-4 space-y-3">
-                      <div>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Created</p>
-                        <p className="font-medium text-gray-900 dark:text-white">
-                          {new Date(selectedDelivery.created_at).toLocaleString()}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Last Updated</p>
-                        <p className="font-medium text-gray-900 dark:text-white">
-                          {formatTime(selectedDelivery.updated_at)}
-                        </p>
-                      </div>
+                    <CardContent className="p-4">
+                      {(() => {
+                        const isMulti = selectedDelivery.is_multi_stop;
+                        const steps = isMulti ? MULTI_STOP_PARENT_STEPS : STATUS_TIMELINE_STEPS;
+                        const currentIdx = getTimelineStepIndex(selectedDelivery.status, steps);
+
+                        return (
+                          <div className="space-y-0">
+                            {/* Step timeline */}
+                            <div className="relative">
+                              {/* Vertical line */}
+                              <div className="absolute left-[15px] top-4 bottom-4 w-0.5 bg-gray-200 dark:bg-gray-700" />
+                              <div className="space-y-1">
+                                {steps.map((step, idx) => {
+                                  const isCompleted = idx <= currentIdx;
+                                  const isCurrent = idx === currentIdx;
+                                  const Icon = step.icon;
+                                  return (
+                                    <div key={step.key} className="relative flex items-center gap-3 py-1.5">
+                                      <div
+                                        className={`relative z-10 flex h-8 w-8 items-center justify-center rounded-full flex-shrink-0 ${
+                                          isCurrent
+                                            ? 'bg-blue-600 ring-4 ring-blue-100 dark:ring-blue-900/40'
+                                            : isCompleted
+                                              ? 'bg-emerald-500'
+                                              : 'bg-gray-200 dark:bg-gray-700'
+                                        }`}
+                                      >
+                                        <Icon className={`h-3.5 w-3.5 ${
+                                          isCompleted || isCurrent ? 'text-white' : 'text-gray-400 dark:text-gray-500'
+                                        }`} />
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className={`text-sm font-medium ${
+                                          isCurrent
+                                            ? 'text-blue-700 dark:text-blue-300'
+                                            : isCompleted
+                                              ? 'text-gray-700 dark:text-gray-300'
+                                              : 'text-gray-400 dark:text-gray-600'
+                                        }`}>
+                                          {step.label}
+                                        </p>
+                                        {isCurrent && (
+                                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                                            {formatTime(selectedDelivery.updated_at)}
+                                          </p>
+                                        )}
+                                      </div>
+                                      {isCurrent && (
+                                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                                          Current
+                                        </span>
+                                      )}
+                                      {isCompleted && !isCurrent && (
+                                        <CheckCircle2 className="h-4 w-4 text-emerald-500 flex-shrink-0" />
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Multi-stop per-stop progress */}
+                            {isMulti && deliveryStops.length > 0 && (
+                              <div className="mt-4 pt-4 border-t dark:border-gray-700">
+                                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2 flex items-center gap-1.5">
+                                  <Package className="h-3 w-3" />
+                                  Stop Progress
+                                </p>
+                                <div className="space-y-1.5">
+                                  {deliveryStops.map((stop) => {
+                                    const isCompleted = stop.status === 'completed';
+                                    const isActive = stop.status === 'in_progress';
+                                    return (
+                                      <div key={stop.id} className="flex items-center gap-2">
+                                        <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                                          isCompleted
+                                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                            : isActive
+                                              ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500'
+                                        }`}>
+                                          {stop.stop_number}
+                                        </div>
+                                        <span className="text-xs text-gray-600 dark:text-gray-300 flex-1 truncate">
+                                          {stop.recipient_name || stop.address}
+                                        </span>
+                                        {isCompleted ? (
+                                          <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+                                            <CheckCircle2 className="h-3 w-3" />
+                                            {stop.completed_at
+                                              ? new Date(stop.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                              : 'Done'
+                                            }
+                                          </span>
+                                        ) : isActive ? (
+                                          <span className="flex items-center gap-1 text-[10px] text-blue-600 dark:text-blue-400 flex-shrink-0">
+                                            <ArrowRight className="h-3 w-3" />
+                                            En Route
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] text-gray-400 flex-shrink-0">Pending</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                {/* Summary bar */}
+                                {(() => {
+                                  const total = deliveryStops.length;
+                                  const completed = deliveryStops.filter(s => s.status === 'completed').length;
+                                  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+                                  return (
+                                    <div className="mt-3">
+                                      <div className="flex justify-between text-[10px] text-gray-500 dark:text-gray-400 mb-1">
+                                        <span>{completed} of {total} stops completed</span>
+                                        <span>{pct}%</span>
+                                      </div>
+                                      <div className="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                        <div
+                                          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                                          style={{ width: `${pct}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            )}
+
+                            {/* Timestamps */}
+                            <div className="mt-4 pt-3 border-t dark:border-gray-700 space-y-1.5">
+                              <div className="flex justify-between text-xs">
+                                <span className="text-gray-500 dark:text-gray-400">Created</span>
+                                <span className="text-gray-700 dark:text-gray-300">{new Date(selectedDelivery.created_at).toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between text-xs">
+                                <span className="text-gray-500 dark:text-gray-400">Last Updated</span>
+                                <span className="text-gray-700 dark:text-gray-300">{formatTime(selectedDelivery.updated_at)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </CardContent>
                   </Card>
                 </div>
@@ -1393,6 +2121,168 @@ export default function TrackingPage() {
               </div>
             </>
           )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Fleet Driver Details Sheet */}
+      <Sheet open={fleetDriverDetailsOpen} onOpenChange={setFleetDriverDetailsOpen}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          {selectedFleetDriver && (() => {
+            const driver = selectedFleetDriver;
+            const staleSecs = driver.location_updated_at
+              ? Math.floor((Date.now() - new Date(driver.location_updated_at).getTime()) / 1000)
+              : null;
+            const staleLabel = staleSecs === null
+              ? 'No location data'
+              : staleSecs < 60
+                ? `${staleSecs} seconds ago`
+                : staleSecs < 3600
+                  ? `${Math.floor(staleSecs / 60)} minutes ago`
+                  : `${Math.floor(staleSecs / 3600)} hours ago`;
+            const activeDriverIds = new Set(deliveries.map(d => d.driver_id).filter(Boolean));
+            const isOnDelivery = activeDriverIds.has(driver.id);
+            const initials = driver.full_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase();
+
+            return (
+              <>
+                <SheetHeader>
+                  <SheetTitle className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-lg font-bold text-gray-600 dark:text-gray-300">
+                      {initials}
+                    </div>
+                    <div>
+                      <div className="text-lg">{driver.full_name}</div>
+                      <div className="text-sm text-gray-500 font-normal">
+                        {isOnDelivery ? (
+                          <span className="text-blue-600">On active delivery</span>
+                        ) : driver.is_available ? (
+                          <span className="text-emerald-600">Available for dispatch</span>
+                        ) : (
+                          <span className="text-gray-500">Online · Unavailable</span>
+                        )}
+                      </div>
+                    </div>
+                  </SheetTitle>
+                  <SheetDescription>
+                    {isOnDelivery ? (
+                      <Badge className="bg-blue-100 text-blue-700 border-blue-200">
+                        <Circle className="h-2 w-2 fill-blue-500 mr-1 animate-pulse" />Live Tracking Active
+                      </Badge>
+                    ) : (
+                      <Badge className={driver.is_available ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-gray-100 text-gray-600 border-gray-200'}>
+                        {driver.is_available ? 'Available' : 'Unavailable'}
+                      </Badge>
+                    )}
+                  </SheetDescription>
+                </SheetHeader>
+
+                <div className="mt-6 space-y-5">
+                  {/* Contact */}
+                  {driver.phone_number && (
+                    <div>
+                      <h3 className="font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-white">
+                        <Phone className="h-4 w-4 text-blue-600" />Contact
+                      </h3>
+                      <Card>
+                        <CardContent className="p-4">
+                          <p className="font-medium text-gray-900 dark:text-white">{driver.phone_number}</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+
+                  {/* Vehicle */}
+                  {(driver.vehicle_model || driver.vehicle_plate) && (
+                    <div>
+                      <h3 className="font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-white">
+                        <Car className="h-4 w-4 text-blue-600" />Vehicle
+                      </h3>
+                      <Card>
+                        <CardContent className="p-4 space-y-2">
+                          {driver.vehicle_model && (
+                            <div>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">Model</p>
+                              <p className="font-medium text-gray-900 dark:text-white">{driver.vehicle_model}</p>
+                            </div>
+                          )}
+                          {driver.vehicle_plate && (
+                            <div>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">Plate Number</p>
+                              <p className="font-medium font-mono text-gray-900 dark:text-white">{driver.vehicle_plate}</p>
+                            </div>
+                          )}
+                          {driver.color && (
+                            <div>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">Color</p>
+                              <p className="font-medium text-gray-900 dark:text-white capitalize">{driver.color}</p>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+
+                  {/* Location */}
+                  <div>
+                    <h3 className="font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-white">
+                      <MapPin className="h-4 w-4 text-blue-600" />Last Known Location
+                    </h3>
+                    <Card>
+                      <CardContent className="p-4 space-y-2">
+                        <div className="flex items-center gap-2">
+                          {staleSecs !== null && staleSecs < 300 ? (
+                            <Circle className="h-3 w-3 fill-green-500 text-green-500" />
+                          ) : staleSecs !== null && staleSecs < 1800 ? (
+                            <Circle className="h-3 w-3 fill-yellow-500 text-yellow-500" />
+                          ) : (
+                            <Circle className="h-3 w-3 fill-gray-400 text-gray-400" />
+                          )}
+                          <p className="text-sm text-gray-700 dark:text-gray-300">Updated {staleLabel}</p>
+                        </div>
+                        {driver.current_latitude && driver.current_longitude ? (
+                          <p className="text-xs text-gray-400 font-mono">
+                            {driver.current_latitude.toFixed(5)}, {driver.current_longitude.toFixed(5)}
+                          </p>
+                        ) : (
+                          <p className="text-sm text-gray-400">No GPS data available</p>
+                        )}
+                        {isOnDelivery && (
+                          <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                            ℹ️ Real-time position shown on map via live tracking
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="pt-3 border-t dark:border-gray-700 space-y-2">
+                    {driver.current_latitude && driver.current_longitude && (
+                      <Button
+                        className="w-full"
+                        onClick={() => {
+                          if (mapRef.current) {
+                            isProgrammaticMoveRef.current = true;
+                            mapRef.current.flyTo({
+                              center: [driver.current_longitude!, driver.current_latitude!],
+                              zoom: 15,
+                              duration: 800,
+                            });
+                          }
+                          setFleetDriverDetailsOpen(false);
+                        }}
+                      >
+                        <MapPin className="h-4 w-4 mr-2" />Focus on Map
+                      </Button>
+                    )}
+                    <Button variant="outline" className="w-full" onClick={() => setFleetDriverDetailsOpen(false)}>
+                      Close
+                    </Button>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </SheetContent>
       </Sheet>
 
