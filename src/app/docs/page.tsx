@@ -269,11 +269,11 @@ export default function DocsPage() {
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl https://swiftdash.app/api/v1/vehicles \\
+                code: `curl https://swiftdashdms.com/api/v1/vehicles \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
-                code: `const res = await fetch('https://swiftdash.app/api/v1/vehicles', {
+                code: `const res = await fetch('https://swiftdashdms.com/api/v1/vehicles', {
   headers: {
     'x-api-key': 'sd_live_YOUR_KEY_HERE',
   },
@@ -284,13 +284,13 @@ const { data } = await res.json();`,
                 code: `import requests
 
 res = requests.get(
-    'https://swiftdash.app/api/v1/vehicles',
+    'https://swiftdashdms.com/api/v1/vehicles',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'}
 )
 print(res.json())`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/vehicles');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/vehicles');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'x-api-key: sd_live_YOUR_KEY_HERE',
@@ -314,7 +314,7 @@ $response = json_decode(curl_exec($ch), true);`,
             <P>All API endpoints are relative to:</P>
             <div className="flex items-center gap-3 rounded-lg bg-muted/60 border border-border px-4 py-3 font-mono text-sm">
               <span className="text-muted-foreground">Base URL</span>
-              <span className="text-foreground">https://swiftdash.app/api/v1</span>
+              <span className="text-foreground">https://swiftdashdms.com/api/v1</span>
             </div>
             <P>
               Requests over plain HTTP will be rejected. All endpoints require HTTPS.
@@ -424,12 +424,12 @@ $response = json_decode(curl_exec($ch), true);`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl 'https://swiftdash.app/api/v1/deliveries?status=pending&limit=10' \\
+                code: `curl 'https://swiftdashdms.com/api/v1/deliveries?status=pending&limit=10' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
                 code: `const res = await fetch(
-  'https://swiftdash.app/api/v1/deliveries?status=pending&limit=10',
+  'https://swiftdashdms.com/api/v1/deliveries?status=pending&limit=10',
   { headers: { 'x-api-key': 'sd_live_YOUR_KEY_HERE' } }
 );
 const { data, count } = await res.json();
@@ -439,7 +439,7 @@ console.log(\`\${count} total deliveries\`);`,
                 code: `import requests
 
 res = requests.get(
-    'https://swiftdash.app/api/v1/deliveries',
+    'https://swiftdashdms.com/api/v1/deliveries',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'},
     params={'status': 'pending', 'limit': 10}
 )
@@ -447,7 +447,7 @@ data = res.json()
 print(f"{data['count']} total deliveries")`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/deliveries?status=pending&limit=10');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/deliveries?status=pending&limit=10');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['x-api-key: sd_live_YOUR_KEY_HERE']);
 $result = json_decode(curl_exec($ch), true);
@@ -513,7 +513,7 @@ echo "Total: " . $result['count'];`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl -X POST 'https://swiftdash.app/api/v1/deliveries' \\
+                code: `curl -X POST 'https://swiftdashdms.com/api/v1/deliveries' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE' \\
   -H 'Content-Type: application/json' \\
   -d '{
@@ -534,7 +534,7 @@ echo "Total: " . $result['count'];`,
   }'`,
               }, {
                 lang: 'Node.js',
-                code: `const res = await fetch('https://swiftdash.app/api/v1/deliveries', {
+                code: `const res = await fetch('https://swiftdashdms.com/api/v1/deliveries', {
   method: 'POST',
   headers: {
     'x-api-key': 'sd_live_YOUR_KEY_HERE',
@@ -582,7 +582,7 @@ payload = {
 }
 
 res = requests.post(
-    "https://swiftdash.app/api/v1/deliveries",
+    "https://swiftdashdms.com/api/v1/deliveries",
     headers={"x-api-key": "sd_live_YOUR_KEY_HERE"},
     json=payload
 )
@@ -607,7 +607,7 @@ print(f"Delivery {result['data']['id']} — Total: ₱{result['pricing']['total'
     'paymentBy'           => 'sender',
 ];
 
-$ch = curl_init('https://swiftdash.app/api/v1/deliveries');
+$ch = curl_init('https://swiftdashdms.com/api/v1/deliveries');
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
@@ -677,12 +677,12 @@ echo "Total: ₱" . $result['pricing']['total'];`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl 'https://swiftdash.app/api/v1/deliveries/del_abc123' \\
+                code: `curl 'https://swiftdashdms.com/api/v1/deliveries/del_abc123' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
                 code: `const res = await fetch(
-  'https://swiftdash.app/api/v1/deliveries/del_abc123',
+  'https://swiftdashdms.com/api/v1/deliveries/del_abc123',
   { headers: { 'x-api-key': 'sd_live_YOUR_KEY_HERE' } }
 );
 const { data } = await res.json();
@@ -690,13 +690,13 @@ console.log(data.status); // "in_transit"`,
               }, {
                 lang: 'Python',
                 code: `res = requests.get(
-    'https://swiftdash.app/api/v1/deliveries/del_abc123',
+    'https://swiftdashdms.com/api/v1/deliveries/del_abc123',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'}
 )
 print(res.json()['data']['status'])`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/deliveries/del_abc123');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/deliveries/del_abc123');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['x-api-key: sd_live_YOUR_KEY_HERE']);
 $result = json_decode(curl_exec($ch), true);
@@ -717,14 +717,14 @@ echo $result['data']['status'];`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl -X DELETE 'https://swiftdash.app/api/v1/deliveries/del_abc123' \\
+                code: `curl -X DELETE 'https://swiftdashdms.com/api/v1/deliveries/del_abc123' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE' \\
   -H 'Content-Type: application/json' \\
   -d '{ "reason": "Customer changed order" }'`,
               }, {
                 lang: 'Node.js',
                 code: `const res = await fetch(
-  'https://swiftdash.app/api/v1/deliveries/del_abc123',
+  'https://swiftdashdms.com/api/v1/deliveries/del_abc123',
   {
     method: 'DELETE',
     headers: {
@@ -738,13 +738,13 @@ echo $result['data']['status'];`,
               }, {
                 lang: 'Python',
                 code: `res = requests.delete(
-    'https://swiftdash.app/api/v1/deliveries/del_abc123',
+    'https://swiftdashdms.com/api/v1/deliveries/del_abc123',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'},
     json={'reason': 'Customer changed order'}
 )`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/deliveries/del_abc123');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/deliveries/del_abc123');
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_CUSTOMREQUEST  => 'DELETE',
@@ -770,11 +770,11 @@ $result = json_decode(curl_exec($ch), true);`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl 'https://swiftdash.app/api/v1/vehicles' \\
+                code: `curl 'https://swiftdashdms.com/api/v1/vehicles' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
-                code: `const res = await fetch('https://swiftdash.app/api/v1/vehicles', {
+                code: `const res = await fetch('https://swiftdashdms.com/api/v1/vehicles', {
   headers: { 'x-api-key': 'sd_live_YOUR_KEY_HERE' },
 });
 const { data } = await res.json();
@@ -782,14 +782,14 @@ const { data } = await res.json();
               }, {
                 lang: 'Python',
                 code: `res = requests.get(
-    'https://swiftdash.app/api/v1/vehicles',
+    'https://swiftdashdms.com/api/v1/vehicles',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'}
 )
 for vehicle in res.json()['data']:
     print(f"{vehicle['name']}: ₱{vehicle['base_price']} base + ₱{vehicle['price_per_km']}/km")`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/vehicles');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/vehicles');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['x-api-key: sd_live_YOUR_KEY_HERE']);
 $result = json_decode(curl_exec($ch), true);
@@ -858,7 +858,7 @@ foreach ($result['data'] as $v) {
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl -X POST 'https://swiftdash.app/api/v1/webhooks' \\
+                code: `curl -X POST 'https://swiftdashdms.com/api/v1/webhooks' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE' \\
   -H 'Content-Type: application/json' \\
   -d '{
@@ -868,7 +868,7 @@ foreach ($result['data'] as $v) {
   }'`,
               }, {
                 lang: 'Node.js',
-                code: `const res = await fetch('https://swiftdash.app/api/v1/webhooks', {
+                code: `const res = await fetch('https://swiftdashdms.com/api/v1/webhooks', {
   method: 'POST',
   headers: {
     'x-api-key': 'sd_live_YOUR_KEY_HERE',
@@ -887,7 +887,7 @@ console.log('Webhook secret:', data.secret);`,
               }, {
                 lang: 'Python',
                 code: `res = requests.post(
-    'https://swiftdash.app/api/v1/webhooks',
+    'https://swiftdashdms.com/api/v1/webhooks',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'},
     json={
         'url': 'https://yourapp.com/webhooks/swiftdash',
@@ -899,7 +899,7 @@ data = res.json()['data']
 print("Secret (save this!):", data['secret'])`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/webhooks');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/webhooks');
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
@@ -925,22 +925,22 @@ $result = json_decode(curl_exec($ch), true);
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl 'https://swiftdash.app/api/v1/webhooks' \\
+                code: `curl 'https://swiftdashdms.com/api/v1/webhooks' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
-                code: `const { data } = await fetch('https://swiftdash.app/api/v1/webhooks', {
+                code: `const { data } = await fetch('https://swiftdashdms.com/api/v1/webhooks', {
   headers: { 'x-api-key': 'sd_live_YOUR_KEY_HERE' },
 }).then(r => r.json());`,
               }, {
                 lang: 'Python',
                 code: `res = requests.get(
-    'https://swiftdash.app/api/v1/webhooks',
+    'https://swiftdashdms.com/api/v1/webhooks',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'}
 )`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/webhooks');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/webhooks');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['x-api-key: sd_live_YOUR_KEY_HERE']);
 $result = json_decode(curl_exec($ch), true);`,
@@ -963,13 +963,13 @@ $result = json_decode(curl_exec($ch), true);`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl -X PATCH 'https://swiftdash.app/api/v1/webhooks/wh_id' \\
+                code: `curl -X PATCH 'https://swiftdashdms.com/api/v1/webhooks/wh_id' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE' \\
   -H 'Content-Type: application/json' \\
   -d '{ "is_active": false }'`,
               }, {
                 lang: 'Node.js',
-                code: `await fetch('https://swiftdash.app/api/v1/webhooks/wh_id', {
+                code: `await fetch('https://swiftdashdms.com/api/v1/webhooks/wh_id', {
   method: 'PATCH',
   headers: {
     'x-api-key': 'sd_live_YOUR_KEY_HERE',
@@ -980,13 +980,13 @@ $result = json_decode(curl_exec($ch), true);`,
               }, {
                 lang: 'Python',
                 code: `requests.patch(
-    'https://swiftdash.app/api/v1/webhooks/wh_id',
+    'https://swiftdashdms.com/api/v1/webhooks/wh_id',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'},
     json={'is_active': False}
 )`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/webhooks/wh_id');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/webhooks/wh_id');
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_CUSTOMREQUEST  => 'PATCH',
@@ -1007,23 +1007,23 @@ curl_exec($ch);`,
             <CodeBlock
               tabs={[{
                 lang: 'cURL',
-                code: `curl -X DELETE 'https://swiftdash.app/api/v1/webhooks/wh_id' \\
+                code: `curl -X DELETE 'https://swiftdashdms.com/api/v1/webhooks/wh_id' \\
   -H 'x-api-key: sd_live_YOUR_KEY_HERE'`,
               }, {
                 lang: 'Node.js',
-                code: `await fetch('https://swiftdash.app/api/v1/webhooks/wh_id', {
+                code: `await fetch('https://swiftdashdms.com/api/v1/webhooks/wh_id', {
   method: 'DELETE',
   headers: { 'x-api-key': 'sd_live_YOUR_KEY_HERE' },
 }); // 204 No Content`,
               }, {
                 lang: 'Python',
                 code: `requests.delete(
-    'https://swiftdash.app/api/v1/webhooks/wh_id',
+    'https://swiftdashdms.com/api/v1/webhooks/wh_id',
     headers={'x-api-key': 'sd_live_YOUR_KEY_HERE'}
 )`,
               }, {
                 lang: 'PHP',
-                code: `$ch = curl_init('https://swiftdash.app/api/v1/webhooks/wh_id');
+                code: `$ch = curl_init('https://swiftdashdms.com/api/v1/webhooks/wh_id');
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_CUSTOMREQUEST  => 'DELETE',
@@ -1161,8 +1161,8 @@ echo 'OK';`,
             <p>SwiftDash API Reference · v1.0 · Updated March 2026</p>
             <p className="mt-1">
               Questions?{' '}
-              <a href="mailto:api-support@swiftdash.app" className="text-primary hover:underline">
-                api-support@swiftdash.app
+              <a href="mailto:api-support@swiftdashdms.com" className="text-primary hover:underline">
+                api-support@swiftdashdms.com
               </a>
             </p>
           </div>
