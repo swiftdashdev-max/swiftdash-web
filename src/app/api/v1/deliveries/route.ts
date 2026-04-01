@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
       driver_id,
       vehicle_types (id, name)
     `, { count: 'exact' })
-    .eq('customer_id', auth.businessId)
+    .eq('business_id', auth.accountId ?? auth.businessId)
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -123,6 +123,7 @@ export async function POST(req: NextRequest) {
     .from('deliveries')
     .insert({
       customer_id:           auth.businessId,
+      business_id:           auth.accountId,
       vehicle_type_id:       body.vehicleTypeId,
       pickup_address:        body.pickupAddress,
       pickup_latitude:       body.pickupLat,

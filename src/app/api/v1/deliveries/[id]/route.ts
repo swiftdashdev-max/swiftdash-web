@@ -43,7 +43,7 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
       vehicle_types (id, name)
     `)
     .eq('id', id)
-    .eq('customer_id', auth.businessId)
+    .or(`customer_id.eq.${auth.businessId},business_id.eq.${auth.accountId ?? auth.businessId}`)
     .single();
 
   if (error || !data) {
@@ -66,9 +66,9 @@ export async function DELETE(req: NextRequest, ctx: RouteContext) {
   // Fetch current status first
   const { data: current, error: fetchErr } = await supabase
     .from('deliveries')
-    .select('id, status, customer_id')
+    .select('id, status, customer_id, business_id')
     .eq('id', id)
-    .eq('customer_id', auth.businessId)
+    .or(`customer_id.eq.${auth.businessId},business_id.eq.${auth.accountId ?? auth.businessId}`)
     .single();
 
   if (fetchErr || !current) {

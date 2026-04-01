@@ -19,7 +19,10 @@ function getServiceClient() {
 }
 
 export interface AuthenticatedBusiness {
+  /** The auth user ID (owner of the API key) */
   businessId: string;
+  /** The business_accounts ID (used on deliveries.business_id) */
+  accountId: string | null;
   keyId: string;
 }
 
@@ -43,6 +46,13 @@ export async function authenticateApiKey(
 
   if (error || !data || !data.is_active) return null;
 
+  // Resolve the business_accounts ID from user_profiles
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('business_id')
+    .eq('id', data.business_id)
+    .single();
+
   // Fire-and-forget: update last_used_at
   supabase
     .from('business_api_keys')
@@ -50,7 +60,11 @@ export async function authenticateApiKey(
     .eq('id', data.id)
     .then(() => {});
 
-  return { businessId: data.business_id, keyId: data.id };
+  return {
+    businessId: data.business_id,
+    accountId: profile?.business_id ?? null,
+    keyId: data.id,
+  };
 }
 
 /**
