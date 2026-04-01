@@ -90,6 +90,9 @@ export default function Home() {
             <Link href="/pricing" className="text-muted-foreground hover:text-foreground transition-colors">
               Pricing
             </Link>
+            <Link href="/docs" className="text-muted-foreground hover:text-foreground transition-colors">
+              API Docs
+            </Link>
             <Link href="#contact" className="text-muted-foreground hover:text-foreground transition-colors">
               Contact
             </Link>

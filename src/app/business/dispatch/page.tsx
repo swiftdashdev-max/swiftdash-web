@@ -79,8 +79,6 @@ import {
   CheckCircle2,
   AlertCircle,
   DollarSign,
-  Building2,
-  Store,
   Upload,
   FileSpreadsheet,
   Download,
@@ -95,6 +93,9 @@ import {
   ChevronDown,
   Ban,
   FileDown,
+  ClipboardList,
+  Printer,
+  Eye,
 } from 'lucide-react';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
@@ -103,6 +104,7 @@ import { Calendar as CalendarPicker } from '@/components/ui/calendar';
 import { DateRange } from 'react-day-picker';
 import { formatDuration } from '@/lib/mapbox-routing';
 import { format } from 'date-fns';
+import jsPDF from 'jspdf';
 
 interface Delivery {
   id: string;
@@ -212,7 +214,6 @@ export default function DispatchPage() {
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showAssignModal, setShowAssignModal] = useState(false);
-  const [assignmentMode, setAssignmentMode] = useState<'auto' | 'manual'>('auto');
   const [selectedDriver, setSelectedDriver] = useState<string>('');
   const [assigning, setAssigning] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -238,19 +239,16 @@ export default function DispatchPage() {
   });
   const [totalRevenue, setTotalRevenue] = useState(0);
   
-  // Fleet vs Marketplace
-  const [driverSource, setDriverSource] = useState<'fleet' | 'marketplace'>('fleet');
+  // Fleet
   const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
-  const [selectedFleetVehicle, setSelectedFleetVehicle] = useState<string>('');
   
   // Pricing
   const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>([]);
   const [selectedVehicleType, setSelectedVehicleType] = useState<string>('');
   const [pricingDetails, setPricingDetails] = useState<PricingDetails | null>(null);
   
-  // Payment (for marketplace only)
-  const [paymentBy, setPaymentBy] = useState<'sender' | 'recipient'>('sender');
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'creditCard' | 'debitCard' | 'maya'>('cash');
+  // Driver search in assign modal
+  const [driverSearchQuery, setDriverSearchQuery] = useState('');
 
   // CSV Import state
   const [showCsvImportModal, setShowCsvImportModal] = useState(false);
@@ -260,6 +258,14 @@ export default function DispatchPage() {
   const [isProcessingCsv, setIsProcessingCsv] = useState(false);
   const [csvImportSuccess, setCsvImportSuccess] = useState(0);
   const [csvProgress, setCsvProgress] = useState<{ current: number; total: number; stage: string } | null>(null);
+
+  // Manifest state
+  const [showManifestsPanel, setShowManifestsPanel] = useState(false);
+  const [manifests, setManifests] = useState<any[]>([]);
+  const [loadingManifests, setLoadingManifests] = useState(false);
+  const [selectedManifest, setSelectedManifest] = useState<any | null>(null);
+  const [manifestItems, setManifestItems] = useState<any[]>([]);
+  const [loadingManifestItems, setLoadingManifestItems] = useState(false);
 
   useEffect(() => {
     if (!userLoading && businessId) {
@@ -603,6 +609,368 @@ export default function DispatchPage() {
     }
   };
 
+  // ── Manifest functions ──────────────────────────────────
+  const fetchManifests = async () => {
+    if (!businessId) return;
+    setLoadingManifests(true);
+    try {
+      const { data, error } = await supabase
+        .from('delivery_manifests')
+        .select('*')
+        .eq('business_id', businessId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (!error) setManifests(data || []);
+    } catch (e) {
+      console.error('Error fetching manifests:', e);
+    } finally {
+      setLoadingManifests(false);
+    }
+  };
+
+  const fetchManifestItems = async (manifestId: string) => {
+    setLoadingManifestItems(true);
+    try {
+      const { data, error } = await supabase
+        .from('manifest_items')
+        .select('*')
+        .eq('manifest_id', manifestId)
+        .order('sort_order', { ascending: true });
+      if (!error) setManifestItems(data || []);
+    } catch (e) {
+      console.error('Error fetching manifest items:', e);
+    } finally {
+      setLoadingManifestItems(false);
+    }
+  };
+
+  const handleViewManifest = async (manifest: any) => {
+    setSelectedManifest(manifest);
+    await fetchManifestItems(manifest.id);
+  };
+
+  const handleDownloadManifestCSV = (manifest: any, items: any[]) => {
+    const headers = [
+      '#', 'Reference #', 'Item Name', 'Qty', 'Weight (kg)',
+      'L (cm)', 'W (cm)', 'H (cm)', 'Cargo Type', 'Declared Value (₱)',
+      'COD (₱)', 'Recipient', 'Phone', 'Address', 'Notes', 'Status'
+    ];
+    const rows = items.map((item, i) => [
+      i + 1,
+      item.reference_number || '',
+      `"${(item.item_name || '').replace(/"/g, '""')}"`,
+      item.quantity || 1,
+      item.weight_kg || '',
+      item.length_cm || '',
+      item.width_cm || '',
+      item.height_cm || '',
+      item.cargo_type || 'standard',
+      item.declared_value || '',
+      item.cod_amount || '',
+      `"${(item.recipient_name || '').replace(/"/g, '""')}"`,
+      item.recipient_phone || '',
+      `"${(item.recipient_address || '').replace(/"/g, '""')}"`,
+      `"${(item.delivery_notes || '').replace(/"/g, '""')}"`,
+      item.status || 'pending',
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (manifest.name || 'manifest').replace(/[^a-zA-Z0-9_-]/g, '_');
+    a.download = `${safeName}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    toast({ title: '✅ Downloaded', description: `${items.length} items exported to CSV.` });
+  };
+
+  const handlePrintManifest = (manifest: any, items: any[]) => {
+    const totalWeight = items.reduce((s: number, i: any) => s + (parseFloat(i.weight_kg) || 0), 0);
+    const totalCod = items.reduce((s: number, i: any) => s + (parseFloat(i.cod_amount) || 0), 0);
+    const totalValue = items.reduce((s: number, i: any) => s + (parseFloat(i.declared_value) || 0), 0);
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>${manifest.name || 'Cargo Manifest'}</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 24px; color: #111; font-size: 11px; }
+      .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 2px solid #111; padding-bottom: 12px; }
+      .header h1 { font-size: 18px; font-weight: 700; }
+      .header .meta { text-align: right; font-size: 10px; color: #555; }
+      .summary { display: flex; gap: 24px; margin-bottom: 16px; font-size: 11px; }
+      .summary .item { background: #f5f5f5; padding: 8px 12px; border-radius: 4px; }
+      .summary .item strong { display: block; font-size: 14px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+      th { background: #f0f0f0; font-weight: 600; text-align: left; padding: 6px 8px; border: 1px solid #ddd; font-size: 10px; text-transform: uppercase; }
+      td { padding: 5px 8px; border: 1px solid #ddd; font-size: 10px; vertical-align: top; }
+      tr:nth-child(even) { background: #fafafa; }
+      .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 600; }
+      .badge-standard { background: #e0e7ff; color: #3730a3; }
+      .badge-fragile { background: #fef3c7; color: #92400e; }
+      .badge-perishable { background: #d1fae5; color: #065f46; }
+      .badge-hazardous { background: #fee2e2; color: #991b1b; }
+      .badge-documents { background: #e0e7ff; color: #3730a3; }
+      .footer { margin-top: 16px; border-top: 1px solid #ddd; padding-top: 12px; display: flex; justify-content: space-between; font-size: 10px; color: #555; }
+      .signatures { margin-top: 32px; display: flex; justify-content: space-between; }
+      .sig-block { width: 200px; text-align: center; font-size: 10px; }
+      .sig-line { border-top: 1px solid #111; margin-top: 40px; padding-top: 4px; }
+      @media print { body { padding: 12px; } }
+    </style></head><body>
+    <div class="header">
+      <div>
+        <h1>📦 CARGO MANIFEST</h1>
+        <p style="margin-top:4px;font-size:13px;font-weight:600">${manifest.name || 'Untitled Manifest'}</p>
+        ${manifest.notes ? `<p style="margin-top:2px;color:#555">${manifest.notes}</p>` : ''}
+      </div>
+      <div class="meta">
+        <p>Date: ${new Date(manifest.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+        <p>ID: ${manifest.id.substring(0, 8).toUpperCase()}</p>
+        <p>Status: ${manifest.status.toUpperCase()}</p>
+      </div>
+    </div>
+    <div class="summary">
+      <div class="item">Items<strong>${items.length}</strong></div>
+      <div class="item">Total Weight<strong>${totalWeight.toFixed(1)} kg</strong></div>
+      <div class="item">Declared Value<strong>₱${totalValue.toLocaleString()}</strong></div>
+      <div class="item">COD to Collect<strong>₱${totalCod.toLocaleString()}</strong></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Ref</th><th>Item</th><th>Qty</th><th>kg</th><th>Dims</th><th>Type</th><th>Value</th><th>COD</th><th>Recipient</th><th>Phone</th><th>Address</th><th>Notes</th>
+      </tr></thead>
+      <tbody>
+        ${items.map((item: any, i: number) => `<tr>
+          <td>${i + 1}</td>
+          <td>${item.reference_number || '-'}</td>
+          <td><strong>${item.item_name}</strong></td>
+          <td style="text-align:center">${item.quantity || 1}</td>
+          <td style="text-align:right">${item.weight_kg || '-'}</td>
+          <td>${item.length_cm ? `${item.length_cm}×${item.width_cm || ''}×${item.height_cm || ''}` : '-'}</td>
+          <td><span class="badge badge-${item.cargo_type || 'standard'}">${item.cargo_type || 'standard'}</span></td>
+          <td style="text-align:right">${item.declared_value ? '₱' + parseFloat(item.declared_value).toLocaleString() : '-'}</td>
+          <td style="text-align:right;font-weight:${parseFloat(item.cod_amount) > 0 ? '600' : '400'}">${item.cod_amount ? '₱' + parseFloat(item.cod_amount).toLocaleString() : '-'}</td>
+          <td>${item.recipient_name}</td>
+          <td>${item.recipient_phone}</td>
+          <td style="max-width:160px">${item.recipient_address}</td>
+          <td style="max-width:100px;color:#555">${item.delivery_notes || ''}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="footer">
+      <span>Total items: ${items.length} · Weight: ${totalWeight.toFixed(1)} kg</span>
+      <span>Declared: ₱${totalValue.toLocaleString()} · COD: ₱${totalCod.toLocaleString()}</span>
+    </div>
+    <div class="signatures">
+      <div class="sig-block"><div class="sig-line">Prepared by</div></div>
+      <div class="sig-block"><div class="sig-line">Checked by</div></div>
+      <div class="sig-block"><div class="sig-line">Received by (Driver)</div></div>
+    </div>
+    </body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 300);
+  };
+
+  const handleDownloadManifestPDF = (manifest: any, items: any[]) => {
+    const totalWeight = items.reduce((s: number, it: any) => s + (parseFloat(it.weight_kg) || 0), 0);
+    const totalCod = items.reduce((s: number, it: any) => s + (parseFloat(it.cod_amount) || 0), 0);
+    const totalValue = items.reduce((s: number, it: any) => s + (parseFloat(it.declared_value) || 0), 0);
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const marginL = 10;
+    const marginR = 10;
+    const usableW = pageW - marginL - marginR;
+    let y = 12;
+
+    // ── Header
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text('CARGO MANIFEST', marginL, y);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100);
+    doc.text(`Date: ${new Date(manifest.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}`, pageW - marginR, y - 4, { align: 'right' });
+    doc.text(`ID: ${manifest.id.substring(0, 8).toUpperCase()}  ·  Status: ${manifest.status.toUpperCase()}`, pageW - marginR, y + 1, { align: 'right' });
+    doc.setTextColor(0);
+    y += 5;
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text(manifest.name || 'Untitled Manifest', marginL, y);
+    if (manifest.notes) {
+      y += 4;
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100);
+      doc.text(manifest.notes, marginL, y);
+      doc.setTextColor(0);
+    }
+    y += 3;
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.5);
+    doc.line(marginL, y, pageW - marginR, y);
+    y += 5;
+
+    // ── Summary boxes
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    const summaryItems = [
+      { label: 'Items', value: `${items.length}` },
+      { label: 'Total Weight', value: `${totalWeight.toFixed(1)} kg` },
+      { label: 'Declared Value', value: `₱${totalValue.toLocaleString()}` },
+      { label: 'COD to Collect', value: `₱${totalCod.toLocaleString()}` },
+    ];
+    const boxW = 45;
+    const boxH = 12;
+    summaryItems.forEach((s, i) => {
+      const bx = marginL + i * (boxW + 4);
+      doc.setFillColor(245, 245, 245);
+      doc.roundedRect(bx, y, boxW, boxH, 1.5, 1.5, 'F');
+      doc.setTextColor(100);
+      doc.setFontSize(7);
+      doc.text(s.label, bx + 3, y + 4);
+      doc.setTextColor(0);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text(s.value, bx + 3, y + 9.5);
+      doc.setFont('helvetica', 'normal');
+    });
+    y += boxH + 6;
+
+    // ── Table header
+    const cols = [
+      { label: '#', w: 7 },
+      { label: 'Ref', w: 18 },
+      { label: 'Item', w: 38 },
+      { label: 'Qty', w: 10 },
+      { label: 'kg', w: 12 },
+      { label: 'Dims', w: 22 },
+      { label: 'Type', w: 18 },
+      { label: 'Value', w: 18 },
+      { label: 'COD', w: 18 },
+      { label: 'Recipient', w: 28 },
+      { label: 'Phone', w: 24 },
+      { label: 'Address', w: 50 },
+      { label: 'Notes', w: 14 },
+    ];
+    const rowH = 6;
+    const headerH = 7;
+
+    const drawTableHeader = (yPos: number) => {
+      doc.setFillColor(240, 240, 240);
+      doc.rect(marginL, yPos, usableW, headerH, 'F');
+      doc.setFontSize(6.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50);
+      let cx = marginL;
+      cols.forEach(col => {
+        doc.text(col.label.toUpperCase(), cx + 1.5, yPos + 4.8);
+        cx += col.w;
+      });
+      doc.setTextColor(0);
+      doc.setFont('helvetica', 'normal');
+      return yPos + headerH;
+    };
+
+    y = drawTableHeader(y);
+
+    // ── Table rows
+    doc.setFontSize(6.5);
+    items.forEach((item: any, i: number) => {
+      if (y + rowH > pageH - 20) {
+        doc.addPage();
+        y = 12;
+        y = drawTableHeader(y);
+        doc.setFontSize(6.5);
+      }
+
+      if (i % 2 === 1) {
+        doc.setFillColor(250, 250, 250);
+        doc.rect(marginL, y, usableW, rowH, 'F');
+      }
+
+      // Light grid line
+      doc.setDrawColor(220);
+      doc.setLineWidth(0.1);
+      doc.line(marginL, y + rowH, pageW - marginR, y + rowH);
+
+      let cx = marginL;
+      const textY = y + 4;
+      const clip = (val: string, maxW: number) => {
+        if (doc.getTextWidth(val) <= maxW - 2) return val;
+        while (val.length > 0 && doc.getTextWidth(val + '…') > maxW - 2) val = val.slice(0, -1);
+        return val + '…';
+      };
+
+      doc.setTextColor(120);
+      doc.text(`${i + 1}`, cx + 1.5, textY); cx += cols[0].w;
+      doc.setTextColor(0);
+      doc.text(clip(item.reference_number || '-', cols[1].w), cx + 1.5, textY); cx += cols[1].w;
+      doc.setFont('helvetica', 'bold');
+      doc.text(clip(item.item_name || '', cols[2].w), cx + 1.5, textY); cx += cols[2].w;
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${item.quantity || 1}`, cx + 1.5, textY); cx += cols[3].w;
+      doc.text(item.weight_kg ? `${item.weight_kg}` : '-', cx + 1.5, textY); cx += cols[4].w;
+      doc.text(item.length_cm ? `${item.length_cm}×${item.width_cm || ''}×${item.height_cm || ''}` : '-', cx + 1.5, textY); cx += cols[5].w;
+      doc.text(clip(item.cargo_type || 'standard', cols[6].w), cx + 1.5, textY); cx += cols[6].w;
+      doc.text(item.declared_value ? `₱${parseFloat(item.declared_value).toLocaleString()}` : '-', cx + 1.5, textY); cx += cols[7].w;
+      if (parseFloat(item.cod_amount) > 0) { doc.setFont('helvetica', 'bold'); }
+      doc.text(item.cod_amount ? `₱${parseFloat(item.cod_amount).toLocaleString()}` : '-', cx + 1.5, textY); cx += cols[8].w;
+      doc.setFont('helvetica', 'normal');
+      doc.text(clip(item.recipient_name || '', cols[9].w), cx + 1.5, textY); cx += cols[9].w;
+      doc.text(clip(item.recipient_phone || '', cols[10].w), cx + 1.5, textY); cx += cols[10].w;
+      doc.text(clip(item.recipient_address || '', cols[11].w), cx + 1.5, textY); cx += cols[11].w;
+      doc.setTextColor(120);
+      doc.text(clip(item.delivery_notes || '', cols[12].w), cx + 1.5, textY);
+      doc.setTextColor(0);
+
+      y += rowH;
+    });
+
+    // ── Footer
+    y += 4;
+    if (y > pageH - 30) { doc.addPage(); y = 12; }
+    doc.setDrawColor(200);
+    doc.setLineWidth(0.3);
+    doc.line(marginL, y, pageW - marginR, y);
+    y += 5;
+    doc.setFontSize(7);
+    doc.setTextColor(100);
+    doc.text(`Total items: ${items.length}  ·  Weight: ${totalWeight.toFixed(1)} kg  ·  Declared: ₱${totalValue.toLocaleString()}  ·  COD: ₱${totalCod.toLocaleString()}`, marginL, y);
+
+    // ── Signature blocks
+    y += 12;
+    if (y > pageH - 25) { doc.addPage(); y = 12; }
+    const sigLabels = ['Prepared by', 'Checked by', 'Received by (Driver)'];
+    const sigW = 55;
+    const sigGap = (usableW - sigW * 3) / 2;
+    sigLabels.forEach((label, idx) => {
+      const sx = marginL + idx * (sigW + sigGap);
+      doc.setDrawColor(0);
+      doc.setLineWidth(0.3);
+      doc.line(sx, y + 15, sx + sigW, y + 15);
+      doc.setFontSize(7);
+      doc.setTextColor(80);
+      doc.text(label, sx + sigW / 2, y + 19, { align: 'center' });
+    });
+
+    // ── Page numbers
+    const totalPages = doc.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setFontSize(6.5);
+      doc.setTextColor(150);
+      doc.text(`Page ${p} of ${totalPages}`, pageW - marginR, pageH - 5, { align: 'right' });
+      doc.text('SwiftDash · Cargo Manifest', marginL, pageH - 5);
+    }
+
+    const safeName = (manifest.name || 'manifest').replace(/[^a-zA-Z0-9_-]/g, '_');
+    doc.save(`${safeName}_${new Date().toISOString().split('T')[0]}.pdf`);
+    toast({ title: '✅ PDF Downloaded', description: `Manifest with ${items.length} items saved as PDF.` });
+  };
+
   const handleSelectDelivery = (id: string) => {
     setSelectedDeliveries(prev =>
       prev.includes(id) ? prev.filter(d => d !== id) : [...prev, id]
@@ -648,16 +1016,6 @@ export default function DispatchPage() {
     }
   }, [selectedVehicleType, selectedDeliveries, deliveries]);
 
-  // Update vehicle type when fleet vehicle changes
-  useEffect(() => {
-    if (selectedFleetVehicle) {
-      const vehicle = fleetVehicles.find(v => v.id === selectedFleetVehicle);
-      if (vehicle) {
-        setSelectedVehicleType(vehicle.vehicle_type_id);
-      }
-    }
-  }, [selectedFleetVehicle, fleetVehicles]);
-
   const handleAssign = () => {
     if (selectedDeliveries.length === 0) {
       alert('Please select at least one delivery to assign');
@@ -665,12 +1023,9 @@ export default function DispatchPage() {
     }
     // Reset assignment state
     setSelectedDriver('');
-    setDriverSource('fleet');
-    setSelectedFleetVehicle('');
     setSelectedVehicleType('');
     setPricingDetails(null);
-    setPaymentBy('sender');
-    setPaymentMethod('cash');
+    setDriverSearchQuery('');
     setShowAssignModal(true);
   };
 
@@ -745,145 +1100,77 @@ export default function DispatchPage() {
   };
 
   const handleManualAssign = async () => {
-    // Validation
-    if (driverSource === 'fleet') {
-      if (!selectedFleetVehicle) {
-        alert('Please select a fleet vehicle');
-        return;
-      }
-    } else {
-      if (!selectedDriver) {
-        alert('Please select a marketplace driver');
-        return;
-      }
-      if (!selectedVehicleType) {
-        alert('Please select a vehicle type for pricing');
-        return;
-      }
+    if (!selectedDriver) {
+      toast({ title: 'No driver selected', description: 'Please select a driver to assign.', variant: 'destructive' });
+      return;
     }
-
-    // Only allow single delivery assignment with this modal (bulk assignment can be added later)
-    if (selectedDeliveries.length !== 1) {
-      alert('Please select exactly one delivery for manual assignment');
+    if (selectedDeliveries.length === 0) {
+      toast({ title: 'No deliveries selected', description: 'Please select at least one delivery.', variant: 'destructive' });
       return;
     }
 
     try {
       setAssigning(true);
-      const deliveryId = selectedDeliveries[0];
-      const delivery = deliveries.find(d => d.id === deliveryId);
-      
-      if (!delivery) {
-        throw new Error('Delivery not found');
-      }
 
-      // Get current user ID
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
+      if (!user) throw new Error('User not authenticated');
 
-      // Prepare parameters based on driver source
-      let assignParams: any = {
-        delivery_id: deliveryId,
-        assigned_by: user.id,
-        assignment_type: 'manual',
-        driver_source: driverSource,
-      };
+      const driver = drivers.find(d => d.id === selectedDriver);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-      if (driverSource === 'fleet') {
-        // Fleet assignment
-        const fleetVehicle = fleetVehicles.find(v => v.id === selectedFleetVehicle);
-        if (!fleetVehicle) {
-          throw new Error('Fleet vehicle not found');
-        }
+      for (const deliveryId of selectedDeliveries) {
+        const delivery = deliveries.find(d => d.id === deliveryId);
+        if (!delivery) continue;
 
-        if (!fleetVehicle.assigned_driver_id) {
-          throw new Error('Fleet vehicle has no assigned driver');
-        }
+        // Find if this driver has an associated fleet vehicle
+        const fleetVehicle = fleetVehicles.find(v => v.assigned_driver_id === selectedDriver);
+        const pricing = driver?.vehicle_type_id
+          ? calculatePricing(driver.vehicle_type_id, delivery.distance_km || 0)
+          : null;
 
-        // Calculate pricing for internal tracking
-        const pricing = calculatePricing(fleetVehicle.vehicle_type_id, delivery.distance_km || 0);
-
-        assignParams = {
-          ...assignParams,
-          driver_id: fleetVehicle.assigned_driver_id,
-          vehicle_type_id: fleetVehicle.vehicle_type_id,
-          fleet_vehicle_id: fleetVehicle.id,
+        const assignParams = {
+          delivery_id: deliveryId,
+          driver_id: selectedDriver,
+          assigned_by: user.id,
+          assignment_type: 'manual',
+          driver_source: 'fleet',
+          vehicle_type_id: driver?.vehicle_type_id || null,
+          fleet_vehicle_id: fleetVehicle?.id || null,
           total_price: pricing?.total || 0,
           delivery_fee: pricing?.total || 0,
           payment_by: null,
           payment_method: null,
         };
 
-        console.log('🚛 Assigning fleet vehicle:', assignParams);
-      } else {
-        // Marketplace assignment
-        const pricing = calculatePricing(selectedVehicleType, delivery.distance_km || 0);
-        
-        if (!pricing) {
-          throw new Error('Could not calculate pricing');
+        console.log('🚛 Assigning driver:', assignParams);
+
+        const response = await fetch(`${supabaseUrl}/functions/v1/assign-business-driver`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+            'apikey': supabaseAnonKey || '',
+          },
+          body: JSON.stringify(assignParams),
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || `Assignment failed for delivery ${deliveryId}`);
         }
 
-        assignParams = {
-          ...assignParams,
-          driver_id: selectedDriver,
-          vehicle_type_id: selectedVehicleType,
-          fleet_vehicle_id: null,
-          total_price: pricing.total,
-          delivery_fee: pricing.total,
-          payment_by: paymentBy,
-          payment_method: paymentMethod,
-        };
-
-        console.log('🏪 Assigning marketplace driver:', assignParams);
+        sendTrackingNotifications(deliveryId);
       }
 
-      // Call edge function to assign driver
-      console.log('📤 Sending assignment request:', assignParams);
-      
-      // Use fetch directly to get better error messages
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      
-      const response = await fetch(`${supabaseUrl}/functions/v1/assign-business-driver`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${supabaseAnonKey}`,
-          'apikey': supabaseAnonKey || '',
-        },
-        body: JSON.stringify(assignParams)
-      });
-
-      const data = await response.json();
-      console.log('📥 Edge function response:', { status: response.status, data });
-
-      if (!response.ok) {
-        console.error('❌ Edge function error:', data);
-        throw new Error(data.error || `Edge function returned ${response.status}`);
-      }
-
-      if (!data.success) {
-        console.error('❌ Assignment failed:', data);
-        throw new Error(data.error || 'Assignment failed');
-      }
-
-      console.log('✅ Successfully assigned delivery:', data);
-
-      // Send tracking notifications — each multi-stop recipient gets their own link
-      sendTrackingNotifications(deliveryId);
-
-      // Refresh data and close modal
       await fetchData();
       setShowAssignModal(false);
       setSelectedDeliveries([]);
       setSelectedDriver('');
-      setSelectedFleetVehicle('');
-      setSelectedVehicleType('');
-      toast({ title: '✅ Driver assigned', description: `Delivery assigned via ${driverSource}.` });
+      setDriverSearchQuery('');
+      toast({ title: '✅ Driver assigned', description: `${selectedDeliveries.length} delivery(ies) assigned to ${driver?.full_name || 'driver'}.` });
     } catch (error) {
-      console.error('❌ Error manually assigning:', error);
+      console.error('❌ Error assigning:', error);
       toast({ title: 'Assignment failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
     } finally {
       setAssigning(false);
@@ -1098,14 +1385,9 @@ export default function DispatchPage() {
   const handleReassign = (delivery: Delivery) => {
     setSelectedDeliveries([delivery.id]);
     setShowDetailsPanel(false);
-    // Reset assignment state
     setSelectedDriver('');
-    setDriverSource('fleet');
-    setSelectedFleetVehicle('');
-    setSelectedVehicleType('');
+    setDriverSearchQuery('');
     setPricingDetails(null);
-    setPaymentBy('sender');
-    setPaymentMethod('cash');
     setShowAssignModal(true);
   };
 
@@ -1695,6 +1977,10 @@ export default function DispatchPage() {
             <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
             Live Updates {realtimeUpdates > 0 && `(${realtimeUpdates})`}
           </div>
+          <Button variant="outline" onClick={() => { setShowManifestsPanel(true); fetchManifests(); }}>
+            <ClipboardList className="h-4 w-4 mr-2" />
+            Manifests
+          </Button>
           <Button variant="outline" onClick={handleExportCsv}>
             <FileDown className="h-4 w-4 mr-2" />
             Export CSV
@@ -2150,266 +2436,173 @@ export default function DispatchPage() {
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Assign Delivery</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5" />
+              Assign Driver
+            </DialogTitle>
             <DialogDescription>
-              {selectedDeliveries.length} delivery selected. Configure assignment details.
+              {selectedDeliveries.length === 1
+                ? `Assigning 1 delivery — select a driver from your fleet.`
+                : `Assigning ${selectedDeliveries.length} deliveries — select a driver from your fleet.`}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            {/* Assignment Mode */}
-            <div className="grid gap-3">
-              <Card
-                className={`cursor-pointer transition-all ${
-                  assignmentMode === 'auto'
-                    ? 'border-primary bg-primary/5'
-                    : 'hover:border-primary/50'
-                }`}
-                onClick={() => setAssignmentMode('auto')}
-              >
-                <CardContent className="flex items-start gap-3 p-4">
-                  <div className="flex items-center justify-center h-10 w-10 rounded-full bg-primary/10 text-primary">
-                    <Zap className="h-5 w-5" />
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold mb-1">Auto Assign</h4>
-                    <p className="text-sm text-muted-foreground">
-                      System automatically assigns best available drivers
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
 
-              <Card
-                className={`cursor-pointer transition-all ${
-                  assignmentMode === 'manual'
-                    ? 'border-primary bg-primary/5'
-                    : 'hover:border-primary/50'
-                }`}
-                onClick={() => setAssignmentMode('manual')}
-              >
-                <CardContent className="flex items-start gap-3 p-4">
-                  <div className="flex items-center justify-center h-10 w-10 rounded-full bg-primary/10 text-primary">
-                    <Users className="h-5 w-5" />
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold mb-1">Manual Assign</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Manually configure vehicle, driver, and pricing
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
+          <div className="space-y-4 py-2">
+            {/* Auto-assign option */}
+            <Card
+              className="cursor-pointer transition-all border-2 hover:border-primary/50 hover:bg-muted/30"
+              onClick={handleAutoAssign}
+            >
+              <CardContent className="flex items-center gap-4 p-4">
+                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-primary/10 text-primary flex-shrink-0">
+                  <Zap className="h-5 w-5" />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-semibold">Auto Assign</h4>
+                  <p className="text-sm text-muted-foreground">Let the system pick the best available driver automatically</p>
+                </div>
+                {assigning && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+              </CardContent>
+            </Card>
+
+            <div className="flex items-center gap-3">
+              <Separator className="flex-1" />
+              <span className="text-xs text-muted-foreground font-medium">OR PICK A DRIVER</span>
+              <Separator className="flex-1" />
             </div>
 
-            {/* Manual Assignment Configuration */}
-            {assignmentMode === 'manual' && (
-              <div className="space-y-4">
-                {/* Driver Source Selection */}
-                <div className="space-y-3">
-                  <Label className="text-base font-semibold">Driver Source</Label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Card
-                      className={`cursor-pointer transition-all ${
-                        driverSource === 'fleet'
-                          ? 'border-primary bg-primary/5'
-                          : 'hover:border-primary/50'
-                      }`}
-                      onClick={() => setDriverSource('fleet')}
-                    >
-                      <CardContent className="p-4 text-center">
-                        <Building2 className="h-8 w-8 mx-auto mb-2 text-primary" />
-                        <h4 className="font-semibold mb-1">Internal Fleet</h4>
-                        <p className="text-xs text-muted-foreground">
-                          Use your own vehicles
-                        </p>
-                      </CardContent>
-                    </Card>
-                    <Card
-                      className={`cursor-pointer transition-all ${
-                        driverSource === 'marketplace'
-                          ? 'border-primary bg-primary/5'
-                          : 'hover:border-primary/50'
-                      }`}
-                      onClick={() => setDriverSource('marketplace')}
-                    >
-                      <CardContent className="p-4 text-center">
-                        <Store className="h-8 w-8 mx-auto mb-2 text-primary" />
-                        <h4 className="font-semibold mb-1">Marketplace</h4>
-                        <p className="text-xs text-muted-foreground">
-                          External drivers
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </div>
-                </div>
+            {/* Driver search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, phone, or vehicle..."
+                value={driverSearchQuery}
+                onChange={(e) => setDriverSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
 
-                {/* Fleet Vehicle Selection */}
-                {driverSource === 'fleet' && (
-                  <div className="space-y-2">
-                    <Label htmlFor="fleet-vehicle">Select Fleet Vehicle</Label>
-                    <Select value={selectedFleetVehicle} onValueChange={setSelectedFleetVehicle}>
-                      <SelectTrigger id="fleet-vehicle">
-                        <SelectValue placeholder="Choose a vehicle from your fleet..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {fleetVehicles.length === 0 ? (
-                          <div className="p-2 text-sm text-muted-foreground text-center">
-                            No fleet vehicles available
-                          </div>
-                        ) : (
-                          fleetVehicles.map((vehicle) => (
-                            <SelectItem key={vehicle.id} value={vehicle.id}>
-                              <div className="flex items-center gap-2">
-                                <Truck className="h-4 w-4" />
-                                {vehicle.vehicle_model} - {vehicle.plate_number}
-                                <span className="text-xs text-muted-foreground ml-2">
-                                  ({vehicle.driver_name})
-                                </span>
-                              </div>
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Internal fleet deliveries do not require payment processing
-                    </p>
-                  </div>
-                )}
+            {/* Driver list */}
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {(() => {
+                const fleetDriverIds = new Set(fleetVehicles.map(v => v.assigned_driver_id).filter(Boolean));
+                const filteredDrivers = drivers.filter(d => {
+                  const isFleet = fleetDriverIds.has(d.id) || d.managed_by_business_id === businessId;
+                  const q = driverSearchQuery.toLowerCase();
+                  const matchesSearch = !q ||
+                    (d.full_name || '').toLowerCase().includes(q) ||
+                    (d.phone || '').toLowerCase().includes(q) ||
+                    (d.vehicle_model || '').toLowerCase().includes(q) ||
+                    (d.plate_number || '').toLowerCase().includes(q);
+                  return matchesSearch;
+                });
 
-                {/* Marketplace Driver Selection */}
-                {driverSource === 'marketplace' && (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="vehicle-type">Vehicle Type</Label>
-                      <Select value={selectedVehicleType} onValueChange={setSelectedVehicleType}>
-                        <SelectTrigger id="vehicle-type">
-                          <SelectValue placeholder="Choose vehicle type..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {vehicleTypes.map((vt) => (
-                            <SelectItem key={vt.id} value={vt.id}>
-                              {vt.name} - ₱{vt.base_price} base + ₱{vt.price_per_km}/km
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                if (filteredDrivers.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                      <Users className="h-10 w-10 mb-3 opacity-30" />
+                      <p className="font-medium text-sm">No drivers found</p>
+                      <p className="text-xs mt-1">
+                        {driverSearchQuery ? 'Try a different search term' : 'No drivers are currently online'}
+                      </p>
                     </div>
+                  );
+                }
 
-                    <div className="space-y-2">
-                      <Label htmlFor="marketplace-driver">Select Driver</Label>
-                      <Select value={selectedDriver} onValueChange={setSelectedDriver}>
-                        <SelectTrigger id="marketplace-driver">
-                          <SelectValue placeholder="Choose an available driver..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {drivers.filter(d => d.is_online === true && d.vehicle_type_id === selectedVehicleType).length === 0 ? (
-                            <div className="p-2 text-sm text-muted-foreground text-center">
-                              No drivers available for this vehicle type
-                            </div>
-                          ) : (
-                            drivers
-                              .filter(d => d.is_online === true && d.vehicle_type_id === selectedVehicleType)
-                              .map((driver) => (
-                                <SelectItem key={driver.id} value={driver.id}>
-                                  <div className="flex items-center gap-2">
-                                    <div className="h-2 w-2 bg-green-500 rounded-full"></div>
-                                    {driver.full_name} - {driver.phone}
-                                  </div>
-                                </SelectItem>
-                              ))
+                return filteredDrivers.map((driver) => {
+                  const isSelected = selectedDriver === driver.id;
+                  const vehicleType = vehicleTypes.find(vt => vt.id === driver.vehicle_type_id);
+                  const fleetVehicle = fleetVehicles.find(v => v.assigned_driver_id === driver.id);
+                  const isFleet = fleetDriverIds.has(driver.id) || driver.managed_by_business_id === businessId;
+
+                  return (
+                    <div
+                      key={driver.id}
+                      onClick={() => setSelectedDriver(isSelected ? '' : driver.id)}
+                      className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                        isSelected
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border hover:border-primary/40 hover:bg-muted/30'
+                      }`}
+                    >
+                      {/* Avatar */}
+                      <div className="relative flex-shrink-0">
+                        <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center font-semibold text-sm">
+                          {(driver.full_name || 'D').charAt(0).toUpperCase()}
+                        </div>
+                        <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background ${driver.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-sm truncate">{driver.full_name || `Driver ${driver.id.slice(0, 6)}`}</p>
+                          {isFleet && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-blue-300 text-blue-600 flex-shrink-0">Fleet</Badge>
                           )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </>
-                )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">{driver.phone || '—'}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          {fleetVehicle ? (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Truck className="h-3 w-3" />
+                              {fleetVehicle.vehicle_model} · {fleetVehicle.plate_number}
+                            </span>
+                          ) : driver.vehicle_model ? (
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Truck className="h-3 w-3" />
+                              {driver.vehicle_model}
+                              {driver.plate_number ? ` · ${driver.plate_number}` : ''}
+                            </span>
+                          ) : null}
+                          {vehicleType && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">{vehicleType.name}</Badge>
+                          )}
+                        </div>
+                      </div>
 
-                {/* Pricing Calculator */}
-                {pricingDetails && (
-                  <Card className="border-primary/50">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <DollarSign className="h-4 w-4" />
-                        Pricing Breakdown
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Vehicle:</span>
-                        <span className="font-medium">{pricingDetails!.vehicle_type}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Base Price:</span>
-                        <span>₱{pricingDetails!.base_price.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Distance Charge:</span>
-                        <span>₱{pricingDetails!.distance_price.toFixed(2)}</span>
-                      </div>
-                      <Separator />
-                      <div className="flex justify-between">
-                        <span className="font-semibold">Total:</span>
-                        <span className="text-lg font-bold text-primary">
-                          ₱{pricingDetails!.total.toFixed(2)}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Payment Fields (Marketplace Only) */}
-                {driverSource === 'marketplace' && (
-                  <div className="space-y-3">
-                    <Label className="text-base font-semibold">Payment Details</Label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="payment-by">Who Pays?</Label>
-                        <Select value={paymentBy} onValueChange={(v) => setPaymentBy(v as any)}>
-                          <SelectTrigger id="payment-by">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="sender">Sender</SelectItem>
-                            <SelectItem value="recipient">Recipient</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="payment-method">Method</Label>
-                        <Select value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as any)}>
-                          <SelectTrigger id="payment-method">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="cash">Cash</SelectItem>
-                            <SelectItem value="creditCard">Credit Card</SelectItem>
-                            <SelectItem value="debitCard">Debit Card</SelectItem>
-                            <SelectItem value="maya">Maya</SelectItem>
-                          </SelectContent>
-                        </Select>
+                      {/* Rating + selected check */}
+                      <div className="flex-shrink-0 flex flex-col items-end gap-1">
+                        {driver.rating != null && (
+                          <span className="text-xs text-muted-foreground">⭐ {driver.rating.toFixed(1)}</span>
+                        )}
+                        {isSelected && <CheckCircle2 className="h-5 w-5 text-primary" />}
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                  );
+                });
+              })()}
+            </div>
 
-            {/* Status Info */}
-            <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-              <Truck className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">
-                {drivers.filter(d => d.is_online === true).length} marketplace drivers available
-              </span>
+            {/* Selected driver summary */}
+            {selectedDriver && (() => {
+              const driver = drivers.find(d => d.id === selectedDriver);
+              const delivery = selectedDeliveries.length === 1 ? deliveries.find(d => d.id === selectedDeliveries[0]) : null;
+              const pricing = driver?.vehicle_type_id && delivery?.distance_km
+                ? calculatePricing(driver.vehicle_type_id, delivery.distance_km)
+                : null;
+              return pricing ? (
+                <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/20 rounded-lg text-sm">
+                  <span className="text-muted-foreground">Estimated cost</span>
+                  <span className="font-semibold text-primary">₱{pricing.total.toFixed(2)}</span>
+                </div>
+              ) : null;
+            })()}
+
+            {/* Online count footer */}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="h-2 w-2 bg-green-500 rounded-full" />
+              {drivers.filter(d => d.is_online).length} drivers online
             </div>
           </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAssignModal(false)}>
+            <Button variant="outline" onClick={() => setShowAssignModal(false)} disabled={assigning}>
               Cancel
             </Button>
             <Button
-              onClick={assignmentMode === 'auto' ? handleAutoAssign : handleManualAssign}
-              disabled={assigning}
+              onClick={handleManualAssign}
+              disabled={assigning || !selectedDriver}
             >
               {assigning ? (
                 <>
@@ -2419,7 +2612,7 @@ export default function DispatchPage() {
               ) : (
                 <>
                   <UserCheck className="h-4 w-4 mr-2" />
-                  {assignmentMode === 'auto' ? 'Auto Assign' : 'Assign Delivery'}
+                  Assign Driver
                 </>
               )}
             </Button>
@@ -3236,6 +3429,245 @@ export default function DispatchPage() {
               </Button>
             )}
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Manifests Panel (Sheet) ── */}
+      <Sheet open={showManifestsPanel} onOpenChange={setShowManifestsPanel}>
+        <SheetContent className="sm:max-w-lg w-full overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <ClipboardList className="h-5 w-5" />
+              Cargo Manifests
+            </SheetTitle>
+            <SheetDescription>
+              View, download, or print saved manifests
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="mt-4 space-y-3">
+            {loadingManifests ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : manifests.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <ClipboardList className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">No manifests yet.</p>
+                <p className="text-xs mt-1">Create one from the Orders page.</p>
+              </div>
+            ) : (
+              manifests.map((m) => (
+                <Card key={m.id} className="cursor-pointer hover:bg-muted/50 transition-colors">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-sm truncate">{m.name}</h4>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {new Date(m.created_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                          <span>{m.total_items} item{m.total_items !== 1 ? 's' : ''}</span>
+                          {m.total_weight_kg && <span>{parseFloat(m.total_weight_kg).toFixed(1)} kg</span>}
+                          {m.total_cod && parseFloat(m.total_cod) > 0 && <span>COD ₱{parseFloat(m.total_cod).toLocaleString()}</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 ml-2">
+                        <Badge variant={
+                          m.status === 'completed' ? 'default' :
+                          m.status === 'partial' ? 'secondary' :
+                          m.status === 'booking' ? 'outline' : 'secondary'
+                        } className="text-[10px]">
+                          {m.status}
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 mt-3">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs flex-1"
+                        onClick={(e) => { e.stopPropagation(); handleViewManifest(m); }}
+                      >
+                        <Eye className="h-3 w-3 mr-1" />
+                        View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs flex-1"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const { data } = await supabase.from('manifest_items').select('*').eq('manifest_id', m.id).order('sort_order');
+                          if (data) handleDownloadManifestCSV(m, data);
+                        }}
+                      >
+                        <FileDown className="h-3 w-3 mr-1" />
+                        CSV
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs flex-1"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const { data } = await supabase.from('manifest_items').select('*').eq('manifest_id', m.id).order('sort_order');
+                          if (data) handleDownloadManifestPDF(m, data);
+                        }}
+                      >
+                        <Download className="h-3 w-3 mr-1" />
+                        PDF
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs flex-1"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const { data } = await supabase.from('manifest_items').select('*').eq('manifest_id', m.id).order('sort_order');
+                          if (data) handlePrintManifest(m, data);
+                        }}
+                      >
+                        <Printer className="h-3 w-3 mr-1" />
+                        Print
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Manifest Detail Dialog ── */}
+      <Dialog open={!!selectedManifest} onOpenChange={(open) => { if (!open) { setSelectedManifest(null); setManifestItems([]); } }}>
+        <DialogContent className="max-w-[90vw] w-full max-h-[85vh] flex flex-col p-0 gap-0 [&>button]:hidden">
+          {selectedManifest && (
+            <>
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <div>
+                  <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+                    <ClipboardList className="h-5 w-5 text-primary" />
+                    {selectedManifest.name}
+                  </DialogTitle>
+                  <DialogDescription className="text-xs mt-0.5">
+                    Created {new Date(selectedManifest.created_at).toLocaleDateString('en-PH', { month: 'long', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    {selectedManifest.notes && ` · ${selectedManifest.notes}`}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={selectedManifest.status === 'completed' ? 'default' : 'secondary'}>
+                    {selectedManifest.status}
+                  </Badge>
+                  <Button variant="outline" size="sm" onClick={() => handleDownloadManifestCSV(selectedManifest, manifestItems)}>
+                    <FileDown className="h-4 w-4 mr-1.5" />
+                    CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handleDownloadManifestPDF(selectedManifest, manifestItems)}>
+                    <Download className="h-4 w-4 mr-1.5" />
+                    PDF
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handlePrintManifest(selectedManifest, manifestItems)}>
+                    <Printer className="h-4 w-4 mr-1.5" />
+                    Print
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => { setSelectedManifest(null); setManifestItems([]); }}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Summary row */}
+              <div className="px-6 py-3 border-b bg-muted/30 flex items-center gap-6 text-sm flex-shrink-0">
+                <div><span className="text-muted-foreground">Items:</span> <strong>{selectedManifest.total_items}</strong></div>
+                {selectedManifest.total_weight_kg && (
+                  <div><span className="text-muted-foreground">Weight:</span> <strong>{parseFloat(selectedManifest.total_weight_kg).toFixed(1)} kg</strong></div>
+                )}
+                {selectedManifest.total_declared_value && parseFloat(selectedManifest.total_declared_value) > 0 && (
+                  <div><span className="text-muted-foreground">Declared:</span> <strong>₱{parseFloat(selectedManifest.total_declared_value).toLocaleString()}</strong></div>
+                )}
+                {selectedManifest.total_cod && parseFloat(selectedManifest.total_cod) > 0 && (
+                  <div><span className="text-muted-foreground">COD:</span> <strong className="text-orange-600">₱{parseFloat(selectedManifest.total_cod).toLocaleString()}</strong></div>
+                )}
+              </div>
+
+              {/* Items table */}
+              <div className="flex-1 overflow-y-auto">
+                {loadingManifestItems ? (
+                  <div className="flex items-center justify-center py-16">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : manifestItems.length === 0 ? (
+                  <div className="text-center py-16 text-muted-foreground">
+                    <Package className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No items in this manifest.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="text-[11px]">
+                          <TableHead className="w-8 px-2">#</TableHead>
+                          <TableHead className="px-2">Ref</TableHead>
+                          <TableHead className="px-2">Item Name</TableHead>
+                          <TableHead className="px-2 text-center">Qty</TableHead>
+                          <TableHead className="px-2 text-right">kg</TableHead>
+                          <TableHead className="px-2">Dims (cm)</TableHead>
+                          <TableHead className="px-2">Type</TableHead>
+                          <TableHead className="px-2 text-right">Value</TableHead>
+                          <TableHead className="px-2 text-right">COD</TableHead>
+                          <TableHead className="px-2">Recipient</TableHead>
+                          <TableHead className="px-2">Phone</TableHead>
+                          <TableHead className="px-2">Address</TableHead>
+                          <TableHead className="px-2">Notes</TableHead>
+                          <TableHead className="px-2">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {manifestItems.map((item, i) => (
+                          <TableRow key={item.id}>
+                            <TableCell className="text-muted-foreground text-[11px] px-2">{i + 1}</TableCell>
+                            <TableCell className="text-xs px-2 font-mono">{item.reference_number || '-'}</TableCell>
+                            <TableCell className="text-xs px-2 font-medium">{item.item_name}</TableCell>
+                            <TableCell className="text-xs px-2 text-center">{item.quantity}</TableCell>
+                            <TableCell className="text-xs px-2 text-right">{item.weight_kg || '-'}</TableCell>
+                            <TableCell className="text-xs px-2">
+                              {item.length_cm ? `${item.length_cm}×${item.width_cm || ''}×${item.height_cm || ''}` : '-'}
+                            </TableCell>
+                            <TableCell className="px-2">
+                              <Badge variant="outline" className="text-[10px] capitalize">{item.cargo_type}</Badge>
+                            </TableCell>
+                            <TableCell className="text-xs px-2 text-right">
+                              {item.declared_value ? `₱${parseFloat(item.declared_value).toLocaleString()}` : '-'}
+                            </TableCell>
+                            <TableCell className="text-xs px-2 text-right font-medium">
+                              {item.cod_amount && parseFloat(item.cod_amount) > 0
+                                ? <span className="text-orange-600">₱{parseFloat(item.cod_amount).toLocaleString()}</span>
+                                : '-'}
+                            </TableCell>
+                            <TableCell className="text-xs px-2">{item.recipient_name}</TableCell>
+                            <TableCell className="text-xs px-2 font-mono">{item.recipient_phone}</TableCell>
+                            <TableCell className="text-xs px-2 max-w-[200px] truncate" title={item.recipient_address}>{item.recipient_address}</TableCell>
+                            <TableCell className="text-xs px-2 text-muted-foreground max-w-[120px] truncate">{item.delivery_notes || '-'}</TableCell>
+                            <TableCell className="px-2">
+                              <Badge variant={
+                                item.status === 'booked' ? 'default' :
+                                item.status === 'failed' ? 'destructive' : 'secondary'
+                              } className="text-[10px]">
+                                {item.status}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

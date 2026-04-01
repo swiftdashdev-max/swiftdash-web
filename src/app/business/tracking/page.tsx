@@ -9,6 +9,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useInterpolatedMultipleDriverLocations, useAblyConnectionState } from '@/lib/ably-client';
 import { useUserContext } from '@/lib/supabase/user-context';
 import { DriverMarker } from '@/components/driver-marker';
+import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -264,6 +265,7 @@ class MarkerInterpolator {
 
 export default function TrackingPage() {
   const supabase = createClient();
+  const { toast } = useToast();
   const { businessId, loading: userLoading } = useUserContext();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -793,91 +795,95 @@ export default function TrackingPage() {
     }
   }, [selectedDelivery, deliveryStops]);
 
-  // Update driver markers with real-time locations
+  // Update driver markers with real-time locations — show ALL active delivery drivers
   useEffect(() => {
-    if (!mapRef.current || !selectedDelivery) {
-      // Clear all driver markers if no delivery is selected
-      markersRef.current.forEach(({ marker }) => marker.remove());
-      markersRef.current.clear();
-      return;
-    }
+    if (!mapRef.current) return;
 
     const map = mapRef.current;
-    
-    // Clear driver markers that are not for the selected delivery
-    markersRef.current.forEach(({ marker }, markerId) => {
-      if (markerId !== `driver-${selectedDelivery.id}`) {
+
+    // Build set of active delivery marker IDs we expect
+    const activeMarkerIds = new Set<string>();
+
+    deliveries.forEach((delivery) => {
+      const location = driverLocations.get(delivery.id);
+      if (!location || !delivery.driver_profiles || !delivery.driver_profiles.user_profiles) return;
+
+      const markerId = `driver-${delivery.id}`;
+      activeMarkerIds.add(markerId);
+      const userProfile = delivery.driver_profiles.user_profiles;
+      const driverName = userProfile.full_name;
+      const avatarUrl = userProfile.profile_image_url || delivery.driver_profiles.profile_picture_url;
+      const lastUpdateSeconds = Math.floor((Date.now() - location.timestamp) / 1000);
+      const isSelected = selectedDelivery?.id === delivery.id;
+
+      if (!markersRef.current.has(markerId)) {
+        // Create new driver marker with React component
+        const el = document.createElement('div');
+        el.className = 'driver-marker-wrapper';
+
+        const root = createRoot(el);
+        root.render(
+          <DriverMarker
+            driverName={driverName}
+            avatarUrl={avatarUrl}
+            heading={location.heading}
+            isOnline={true}
+            lastUpdateSeconds={lastUpdateSeconds}
+            speed={location.speed}
+            onClick={() => {
+              setSelectedDelivery(delivery);
+              setDetailsOpen(true);
+              if (delivery.is_multi_stop) fetchStopsForDelivery(delivery.id);
+            }}
+          />
+        );
+
+        const marker = new mapboxgl.Marker({
+          element: el,
+          anchor: 'center',
+        })
+          .setLngLat([location.longitude, location.latitude])
+          .addTo(map);
+
+        const interpolator = new MarkerInterpolator(
+          marker,
+          location.latitude,
+          location.longitude
+        );
+
+        markersRef.current.set(markerId, { marker, interpolator, root });
+      } else {
+        // Update existing marker position with interpolation
+        const { marker, interpolator, root } = markersRef.current.get(markerId)!;
+        interpolator.setTarget(location.latitude, location.longitude);
+
+        root.render(
+          <DriverMarker
+            driverName={driverName}
+            avatarUrl={avatarUrl}
+            heading={location.heading}
+            isOnline={true}
+            lastUpdateSeconds={lastUpdateSeconds}
+            speed={location.speed}
+            onClick={() => {
+              setSelectedDelivery(delivery);
+              setDetailsOpen(true);
+              if (delivery.is_multi_stop) fetchStopsForDelivery(delivery.id);
+            }}
+          />
+        );
+      }
+    });
+
+    // Remove markers for deliveries that are no longer active
+    markersRef.current.forEach(({ marker, interpolator }, markerId) => {
+      if (!activeMarkerIds.has(markerId)) {
+        interpolator.stop();
         marker.remove();
         markersRef.current.delete(markerId);
       }
     });
-
-    // Only show driver marker for selected delivery
-    const location = driverLocations.get(selectedDelivery.id);
-    if (!location || !selectedDelivery.driver_profiles || !selectedDelivery.driver_profiles.user_profiles) return;
-
-    const markerId = `driver-${selectedDelivery.id}`;
-    const userProfile = selectedDelivery.driver_profiles.user_profiles;
-    const driverName = userProfile.full_name;
-    const avatarUrl = userProfile.profile_image_url || selectedDelivery.driver_profiles.profile_picture_url;
-    const lastUpdateSeconds = Math.floor((Date.now() - location.timestamp) / 1000);
-      
-    if (!markersRef.current.has(markerId)) {
-      // Create new driver marker with React component
-      const el = document.createElement('div');
-      el.className = 'driver-marker-wrapper';
-      
-      // Render React component into the element
-      const root = createRoot(el);
-      root.render(
-        <DriverMarker
-          driverName={driverName}
-          avatarUrl={avatarUrl}
-          heading={location.heading}
-          isOnline={true}
-          lastUpdateSeconds={lastUpdateSeconds}
-          speed={location.speed}
-          onClick={() => {
-            setDetailsOpen(true);
-          }}
-        />
-      );
-
-      const marker = new mapboxgl.Marker({
-        element: el,
-        anchor: 'center',
-      })
-        .setLngLat([location.longitude, location.latitude])
-        .addTo(map);
-
-      const interpolator = new MarkerInterpolator(
-        marker,
-        location.latitude,
-        location.longitude
-      );
-
-      markersRef.current.set(markerId, { marker, interpolator, root });
-    } else {
-      // Update existing marker position with interpolation
-      const { marker, interpolator, root } = markersRef.current.get(markerId)!;
-      interpolator.setTarget(location.latitude, location.longitude);
-
-      // Update React component props (re-render with existing root)
-      root.render(
-        <DriverMarker
-          driverName={driverName}
-          avatarUrl={avatarUrl}
-          heading={location.heading}
-          isOnline={true}
-          lastUpdateSeconds={lastUpdateSeconds}
-          speed={location.speed}
-          onClick={() => {
-            setDetailsOpen(true);
-          }}
-        />
-      );
-    }
-  }, [selectedDelivery, driverLocations]);
+  }, [deliveries, selectedDelivery, driverLocations]);
 
   // Draw route polylines and calculate ETA
   useEffect(() => {
@@ -928,10 +934,21 @@ export default function TrackingPage() {
         // Route to pickup
         destLat = selectedDelivery.pickup_latitude;
         destLng = selectedDelivery.pickup_longitude;
-      } else if (['picked_up', 'going_to_dropoff', 'arrived_at_dropoff', 'dropoff_arrived'].includes(selectedDelivery.status)) {
-        // Route to dropoff
-        destLat = selectedDelivery.delivery_latitude;
-        destLng = selectedDelivery.delivery_longitude;
+      } else if (['package_collected', 'in_transit', 'at_destination'].includes(selectedDelivery.status)) {
+        // For multi-stop: route to the current active (in_progress) stop
+        if (selectedDelivery.is_multi_stop && deliveryStops.length > 0) {
+          const activeStop = deliveryStops.find(s => s.status === 'in_progress')
+            || deliveryStops.find(s => s.status === 'pending');
+          if (activeStop?.latitude && activeStop?.longitude) {
+            destLat = activeStop.latitude;
+            destLng = activeStop.longitude;
+          }
+        }
+        // Fallback: route to the parent delivery address
+        if (!destLat || !destLng) {
+          destLat = selectedDelivery.delivery_latitude;
+          destLng = selectedDelivery.delivery_longitude;
+        }
       }
 
       if (!destLat || !destLng) return;
@@ -1007,7 +1024,7 @@ export default function TrackingPage() {
     return () => {
       clearInterval(interval);
     };
-  }, [selectedDelivery, driverLocations]);
+  }, [selectedDelivery, driverLocations, deliveryStops]);
 
   // Helper functions
   const getStatusColor = (status: string) => {
@@ -1022,7 +1039,12 @@ export default function TrackingPage() {
       case 'arrived_at_dropoff':
         return 'bg-yellow-500';
       case 'picked_up':
+      case 'package_collected':
         return 'bg-purple-500';
+      case 'in_transit':
+        return 'bg-blue-500';
+      case 'at_destination':
+        return 'bg-green-500';
       default:
         return 'bg-gray-500';
     }
@@ -1036,9 +1058,13 @@ export default function TrackingPage() {
       arrived_at_pickup: 'At Pickup',
       pickup_arrived: 'At Pickup',
       picked_up: 'Picked Up',
+      package_collected: 'Package Collected',
+      in_transit: 'In Transit',
       going_to_dropoff: 'In Transit',
+      at_destination: 'At Destination',
       arrived_at_dropoff: 'Arriving',
-      dropoff_arrived: 'Arriving'
+      dropoff_arrived: 'Arriving',
+      delivered: 'Delivered',
     };
     return labels[status] || status;
   };
@@ -1112,11 +1138,18 @@ export default function TrackingPage() {
       setDetailsOpen(false);
       setSelectedDelivery(null);
       
-      // Show success message
-      alert('Delivery cancelled successfully');
+      // Show success toast
+      toast({
+        title: 'Delivery Cancelled',
+        description: 'The delivery has been cancelled successfully.',
+      });
     } catch (error) {
       console.error('Error cancelling delivery:', error);
-      alert('Failed to cancel delivery. Please try again.');
+      toast({
+        title: 'Cancellation Failed',
+        description: 'Failed to cancel delivery. Please try again.',
+        variant: 'destructive',
+      });
     } finally {
       setIsCanceling(false);
     }

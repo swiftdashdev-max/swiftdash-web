@@ -36,6 +36,7 @@ import { DeliveryMap } from '@/components/delivery-map';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
 import { reverseGeocode, isValidCoordinates } from '@/lib/geocoding-utils';
+import { parseManifestCSV, downloadManifestTemplate, CARGO_TYPES, type ManifestRow, type CargoType } from '@/lib/csv-parser';
 import {
   Package,
   MapPin,
@@ -57,6 +58,11 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
+  FileSpreadsheet,
+  Upload,
+  AlertCircle,
+  FileDown,
+  ClipboardList,
 } from 'lucide-react';
 
 // Vehicle type interface matching database schema
@@ -136,6 +142,19 @@ export default function OrdersPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
   const [createdDeliveryId, setCreatedDeliveryId] = useState<string | null>(null);
+
+  // ── Cargo Manifest state ──────────────────────────────
+  const [showManifestModal, setShowManifestModal] = useState(false);
+  const [manifestName, setManifestName] = useState('');
+  const [manifestNotes, setManifestNotes] = useState('');
+  const [manifestRows, setManifestRows] = useState<ManifestRow[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [csvParseErrors, setCsvParseErrors] = useState<string[]>([]);
+  const [isGeocodingManifest, setIsGeocodingManifest] = useState(false);
+  const [geocodingManifestIndex, setGeocodingManifestIndex] = useState<number | null>(null);
+  const [showManifestProgress, setShowManifestProgress] = useState(false);
+  const [manifestBookingProgress, setManifestBookingProgress] = useState({ current: 0, total: 0, failed: 0 });
+  const [manifestComplete, setManifestComplete] = useState(false);
   
   // Use cached vehicle types hook
   const { vehicleTypes, loading: loadingVehicles, error: vehicleError } = useVehicleTypes();
@@ -558,6 +577,16 @@ export default function OrdersPage() {
                   Book a new delivery with single or multiple stops
                 </p>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowManifestModal(true)}
+                className="flex items-center gap-1.5 flex-shrink-0"
+              >
+                <ClipboardList className="h-4 w-4" />
+                Manifest
+              </Button>
             </div>
 
             {/* Delivery Type Tabs */}
@@ -1100,10 +1129,696 @@ export default function OrdersPage() {
                 )}
               </Button>
             </form>
+
           </Tabs>
           </div>
         </div>
       </div>
+
+      {/* ── Cargo Manifest Modal ── */}
+      <Dialog open={showManifestModal} onOpenChange={(open) => {
+        if (!open && !isGeocodingManifest && !showManifestProgress) setShowManifestModal(false);
+      }}>
+        <DialogContent className="max-w-[95vw] w-full h-[90vh] flex flex-col p-0 gap-0 [&>button]:hidden">
+          {/* Modal Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <ClipboardList className="h-5 w-5" />
+              </div>
+              <div>
+                <DialogTitle className="text-lg font-semibold">Cargo Manifest</DialogTitle>
+                <DialogDescription className="text-xs">
+                  List what you&apos;re shipping &amp; where it&apos;s going — manually or via CSV
+                </DialogDescription>
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-full" onClick={() => setShowManifestModal(false)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Booking Progress Overlay */}
+          {showManifestProgress && (
+            <div className="absolute inset-0 z-50 bg-background/90 flex items-center justify-center">
+              <div className="text-center space-y-4 max-w-sm">
+                {manifestComplete ? (
+                  <>
+                    <CheckCircle2 className="h-16 w-16 text-green-500 mx-auto" />
+                    <h3 className="text-lg font-semibold">Manifest Saved!</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {manifestBookingProgress.total - manifestBookingProgress.failed} of {manifestBookingProgress.total} items saved successfully.
+                      {manifestBookingProgress.failed > 0 && ` ${manifestBookingProgress.failed} failed.`}
+                    </p>
+                    <Button onClick={() => {
+                      setShowManifestProgress(false);
+                      setManifestComplete(false);
+                      setShowManifestModal(false);
+                      setManifestName('');
+                      setManifestNotes('');
+                      setManifestRows([]);
+                    }}>
+                      Done
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto" />
+                    <h3 className="text-lg font-semibold">Saving Manifest...</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {isGeocodingManifest
+                        ? `Geocoding addresses: ${geocodingManifestIndex !== null ? geocodingManifestIndex + 1 : 0} / ${manifestRows.length}`
+                        : `Saving items: ${manifestBookingProgress.current} / ${manifestBookingProgress.total}`
+                      }
+                    </p>
+                    <div className="w-full bg-muted rounded-full h-2">
+                      <div
+                        className="bg-primary h-2 rounded-full transition-all"
+                        style={{
+                          width: `${isGeocodingManifest
+                            ? ((geocodingManifestIndex ?? 0) / manifestRows.length) * 100
+                            : (manifestBookingProgress.current / manifestBookingProgress.total) * 100
+                          }%`
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Modal Body — scrollable */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-6 space-y-6">
+
+              {/* Manifest Name + Notes row */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="manifest-name" className="text-sm font-semibold flex items-center gap-2">
+                    <ClipboardList className="h-4 w-4" />
+                    Manifest Name
+                  </Label>
+                  <Input
+                    id="manifest-name"
+                    placeholder="e.g. Morning Run - Mar 18"
+                    value={manifestName}
+                    onChange={(e) => setManifestName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="manifest-notes" className="text-sm font-semibold flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4" />
+                    Notes (optional)
+                  </Label>
+                  <Input
+                    id="manifest-notes"
+                    placeholder="e.g. Warehouse A batch"
+                    value={manifestNotes}
+                    onChange={(e) => setManifestNotes(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* CSV Import Zone */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-semibold flex items-center gap-2">
+                    <Upload className="h-4 w-4" />
+                    Import from CSV
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={downloadManifestTemplate}
+                    className="text-xs text-muted-foreground"
+                  >
+                    <FileDown className="h-3.5 w-3.5 mr-1.5" />
+                    Download Template
+                  </Button>
+                </div>
+
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                  onDragLeave={() => setIsDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDragOver(false);
+                    const file = e.dataTransfer.files[0];
+                    if (!file) return;
+                    if (!file.name.endsWith('.csv')) {
+                      setCsvParseErrors(['Please upload a .csv file.']);
+                      return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const text = ev.target?.result as string;
+                      const result = parseManifestCSV(text);
+                      setCsvParseErrors(result.errors);
+                      if (result.errors.length === 0) setManifestRows(result.rows);
+                    };
+                    reader.readAsText(file);
+                  }}
+                  className={`border-2 border-dashed rounded-lg p-5 text-center transition-colors cursor-pointer ${
+                    isDragOver
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:border-primary/50 hover:bg-muted/30'
+                  }`}
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.csv';
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        const text = ev.target?.result as string;
+                        const result = parseManifestCSV(text);
+                        setCsvParseErrors(result.errors);
+                        if (result.errors.length === 0) setManifestRows(result.rows);
+                      };
+                      reader.readAsText(file);
+                    };
+                    input.click();
+                  }}
+                >
+                  <FileSpreadsheet className="h-7 w-7 mx-auto mb-2 text-muted-foreground" />
+                  <p className="text-sm font-medium">Drop CSV here or click to browse</p>
+                  <p className="text-xs text-muted-foreground mt-1">Max 200 rows · Required: item_name, recipient_name, recipient_phone, recipient_address</p>
+                </div>
+
+                {csvParseErrors.length > 0 && (
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1">
+                    {csvParseErrors.map((err, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm text-destructive">
+                        <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                        <span>{err}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Cargo Items Spreadsheet */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-semibold">
+                    Cargo Items
+                    {manifestRows.length > 0 && (
+                      <Badge variant="secondary" className="ml-2">{manifestRows.length}</Badge>
+                    )}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    {manifestRows.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-destructive hover:text-destructive"
+                        onClick={() => { setManifestRows([]); setCsvParseErrors([]); }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1" />
+                        Clear All
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setManifestRows(prev => [...prev, {
+                          id: `manual-${Date.now()}`,
+                          reference_number: '',
+                          item_name: '',
+                          quantity: '1',
+                          weight_kg: '',
+                          length_cm: '',
+                          width_cm: '',
+                          height_cm: '',
+                          cargo_type: 'standard',
+                          declared_value: '',
+                          cod_amount: '',
+                          recipient_name: '',
+                          recipient_phone: '',
+                          recipient_address: '',
+                          delivery_notes: '',
+                          errors: [],
+                          geocodeStatus: 'pending',
+                        }]);
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-1.5" />
+                      Add Item
+                    </Button>
+                  </div>
+                </div>
+
+                {manifestRows.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">
+                    <Package className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                    <p className="text-sm">No cargo items yet. Import a CSV or add items manually.</p>
+                  </div>
+                ) : (
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="text-[11px]">
+                            <TableHead className="w-8 px-2">#</TableHead>
+                            <TableHead className="w-[90px] px-1">Ref #</TableHead>
+                            <TableHead className="min-w-[140px] px-1">Item Name *</TableHead>
+                            <TableHead className="w-[50px] px-1">Qty</TableHead>
+                            <TableHead className="w-[65px] px-1">kg</TableHead>
+                            <TableHead className="w-[130px] px-1">L × W × H (cm)</TableHead>
+                            <TableHead className="w-[100px] px-1">Type</TableHead>
+                            <TableHead className="w-[85px] px-1">Value ₱</TableHead>
+                            <TableHead className="w-[85px] px-1">COD ₱</TableHead>
+                            <TableHead className="min-w-[120px] px-1">Recipient *</TableHead>
+                            <TableHead className="min-w-[115px] px-1">Phone *</TableHead>
+                            <TableHead className="min-w-[180px] px-1">Address *</TableHead>
+                            <TableHead className="min-w-[100px] px-1">Notes</TableHead>
+                            <TableHead className="w-[40px] px-1">Geo</TableHead>
+                            <TableHead className="w-[36px] px-1"></TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {manifestRows.map((row, index) => (
+                            <TableRow key={row.id} className={row.errors.length > 0 ? 'bg-destructive/5' : ''}>
+                              <TableCell className="text-muted-foreground text-[11px] px-2">{index + 1}</TableCell>
+                              {/* Ref # */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.reference_number}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], reference_number: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="ORD-001"
+                                  className="h-7 text-[11px] px-1.5"
+                                />
+                              </TableCell>
+                              {/* Item Name */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.item_name}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], item_name: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="Laptop"
+                                  className={`h-7 text-[11px] px-1.5 ${row.errors.some(e => e.includes('item')) ? 'border-destructive' : ''}`}
+                                />
+                              </TableCell>
+                              {/* Qty */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.quantity}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], quantity: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="1"
+                                  className="h-7 text-[11px] px-1.5 text-center"
+                                />
+                              </TableCell>
+                              {/* Weight */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.weight_kg}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], weight_kg: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="2.5"
+                                  className="h-7 text-[11px] px-1.5 text-center"
+                                />
+                              </TableCell>
+                              {/* Dimensions L × W × H */}
+                              <TableCell className="px-1">
+                                <div className="flex items-center gap-0.5">
+                                  <Input
+                                    value={row.length_cm}
+                                    onChange={(e) => {
+                                      const updated = [...manifestRows];
+                                      updated[index] = { ...updated[index], length_cm: e.target.value };
+                                      setManifestRows(updated);
+                                    }}
+                                    placeholder="L"
+                                    className="h-7 text-[11px] px-1 text-center w-10"
+                                  />
+                                  <span className="text-[10px] text-muted-foreground">×</span>
+                                  <Input
+                                    value={row.width_cm}
+                                    onChange={(e) => {
+                                      const updated = [...manifestRows];
+                                      updated[index] = { ...updated[index], width_cm: e.target.value };
+                                      setManifestRows(updated);
+                                    }}
+                                    placeholder="W"
+                                    className="h-7 text-[11px] px-1 text-center w-10"
+                                  />
+                                  <span className="text-[10px] text-muted-foreground">×</span>
+                                  <Input
+                                    value={row.height_cm}
+                                    onChange={(e) => {
+                                      const updated = [...manifestRows];
+                                      updated[index] = { ...updated[index], height_cm: e.target.value };
+                                      setManifestRows(updated);
+                                    }}
+                                    placeholder="H"
+                                    className="h-7 text-[11px] px-1 text-center w-10"
+                                  />
+                                </div>
+                              </TableCell>
+                              {/* Cargo Type */}
+                              <TableCell className="px-1">
+                                <Select
+                                  value={row.cargo_type || 'standard'}
+                                  onValueChange={(val) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], cargo_type: val };
+                                    setManifestRows(updated);
+                                  }}
+                                >
+                                  <SelectTrigger className="h-7 text-[11px] px-1.5">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {CARGO_TYPES.map(t => (
+                                      <SelectItem key={t} value={t} className="text-xs capitalize">{t}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                              {/* Declared Value */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.declared_value}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], declared_value: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="0"
+                                  className="h-7 text-[11px] px-1.5 text-right"
+                                />
+                              </TableCell>
+                              {/* COD */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.cod_amount}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], cod_amount: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="0"
+                                  className="h-7 text-[11px] px-1.5 text-right"
+                                />
+                              </TableCell>
+                              {/* Recipient Name */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.recipient_name}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], recipient_name: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="Name"
+                                  className={`h-7 text-[11px] px-1.5 ${row.errors.some(e => e.includes('recipient name')) ? 'border-destructive' : ''}`}
+                                />
+                              </TableCell>
+                              {/* Recipient Phone */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.recipient_phone}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], recipient_phone: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="09XXXXXXXXX"
+                                  className={`h-7 text-[11px] px-1.5 ${row.errors.some(e => e.includes('phone')) ? 'border-destructive' : ''}`}
+                                />
+                              </TableCell>
+                              {/* Recipient Address */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.recipient_address}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], recipient_address: e.target.value, geocodeStatus: 'pending', lat: undefined, lng: undefined };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="Delivery address"
+                                  className={`h-7 text-[11px] px-1.5 ${row.errors.some(e => e.includes('address')) ? 'border-destructive' : ''}`}
+                                />
+                              </TableCell>
+                              {/* Notes */}
+                              <TableCell className="px-1">
+                                <Input
+                                  value={row.delivery_notes}
+                                  onChange={(e) => {
+                                    const updated = [...manifestRows];
+                                    updated[index] = { ...updated[index], delivery_notes: e.target.value };
+                                    setManifestRows(updated);
+                                  }}
+                                  placeholder="Notes"
+                                  className="h-7 text-[11px] px-1.5"
+                                />
+                              </TableCell>
+                              {/* Geocode Status */}
+                              <TableCell className="px-1">
+                                {row.geocodeStatus === 'success' && <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />}
+                                {row.geocodeStatus === 'geocoding' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                                {row.geocodeStatus === 'failed' && <span title="Geocoding failed"><AlertCircle className="h-3.5 w-3.5 text-destructive" /></span>}
+                                {row.geocodeStatus === 'pending' && <div className="h-3.5 w-3.5 rounded-full border-2 border-muted" />}
+                              </TableCell>
+                              {/* Delete */}
+                              <TableCell className="px-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0"
+                                  onClick={() => setManifestRows(prev => prev.filter((_, i) => i !== index))}
+                                >
+                                  <X className="h-3 w-3" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Validation errors per row */}
+              {manifestRows.some(r => r.errors.length > 0) && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1">
+                  <p className="text-sm font-medium text-destructive mb-2">Fix the following errors before submitting:</p>
+                  {manifestRows.flatMap((row, i) =>
+                    row.errors.map((err, j) => (
+                      <div key={`${i}-${j}`} className="flex items-center gap-2 text-xs text-destructive">
+                        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+                        <span>Row {i + 1}: {err}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+            </div>
+          </div>
+
+          {/* Modal Footer — sticky at bottom */}
+          <div className="flex-shrink-0 border-t px-6 py-3 flex items-center justify-between bg-background">
+            <div className="text-xs text-muted-foreground space-y-0.5">
+              {manifestRows.length > 0 ? (
+                <>
+                  <p>{manifestRows.length} item{manifestRows.length === 1 ? '' : 's'} · {manifestRows.filter(r => r.geocodeStatus === 'success').length} geocoded</p>
+                  {manifestRows.some(r => r.weight_kg) && (
+                    <p>Total weight: {manifestRows.reduce((sum, r) => sum + (parseFloat(r.weight_kg) || 0), 0).toFixed(1)} kg</p>
+                  )}
+                  {manifestRows.some(r => r.cod_amount) && (
+                    <p>Total COD: ₱{manifestRows.reduce((sum, r) => sum + (parseFloat(r.cod_amount) || 0), 0).toLocaleString()}</p>
+                  )}
+                </>
+              ) : (
+                <p>No cargo items added yet</p>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setShowManifestModal(false)}>
+                Cancel
+              </Button>
+              {manifestRows.length > 0 && (
+                <Button
+                  size="sm"
+                  disabled={isGeocodingManifest || manifestRows.some(r => r.errors.length > 0)}
+                  onClick={async () => {
+                    if (!businessId || !userId) return;
+
+                    // Step 1: Geocode all pending addresses
+                    setIsGeocodingManifest(true);
+                    setShowManifestProgress(true);
+                    for (let i = 0; i < manifestRows.length; i++) {
+                      const row = manifestRows[i];
+                      if (row.geocodeStatus === 'success' || !row.recipient_address) continue;
+                      setGeocodingManifestIndex(i);
+                      setManifestRows(prev => {
+                        const updated = [...prev];
+                        updated[i] = { ...updated[i], geocodeStatus: 'geocoding' };
+                        return updated;
+                      });
+                      try {
+                        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+                        const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(row.recipient_address)}&key=${apiKey}`;
+                        const resp = await fetch(url);
+                        const json = await resp.json();
+                        if (json.status === 'OK' && json.results?.[0]) {
+                          const loc = json.results[0].geometry.location;
+                          setManifestRows(prev => {
+                            const updated = [...prev];
+                            updated[i] = { ...updated[i], lat: loc.lat, lng: loc.lng, geocodeStatus: 'success' };
+                            return updated;
+                          });
+                        } else {
+                          setManifestRows(prev => {
+                            const updated = [...prev];
+                            updated[i] = { ...updated[i], geocodeStatus: 'failed' };
+                            return updated;
+                          });
+                        }
+                      } catch {
+                        setManifestRows(prev => {
+                          const updated = [...prev];
+                          updated[i] = { ...updated[i], geocodeStatus: 'failed' };
+                          return updated;
+                        });
+                      }
+                      await new Promise(r => setTimeout(r, 80));
+                    }
+                    setIsGeocodingManifest(false);
+                    setGeocodingManifestIndex(null);
+
+                    const currentRows = manifestRows;
+                    const failedGeocode = currentRows.filter(r => r.recipient_address && r.geocodeStatus === 'failed');
+                    if (failedGeocode.length > 0) {
+                      setShowManifestProgress(false);
+                      alert(`${failedGeocode.length} address(es) could not be geocoded. Please fix them and try again.`);
+                      return;
+                    }
+
+                    // Step 2: Compute totals
+                    const totalWeight = currentRows.reduce((s, r) => s + (parseFloat(r.weight_kg) || 0), 0);
+                    const totalDeclared = currentRows.reduce((s, r) => s + (parseFloat(r.declared_value) || 0), 0);
+                    const totalCod = currentRows.reduce((s, r) => s + (parseFloat(r.cod_amount) || 0), 0);
+
+                    // Step 3: Create manifest record
+                    const { data: manifest, error: manifestError } = await supabase
+                      .from('delivery_manifests')
+                      .insert({
+                        business_id: businessId,
+                        name: manifestName || `Manifest - ${new Date().toLocaleDateString('en-PH')}`,
+                        total_items: currentRows.length,
+                        total_weight_kg: totalWeight || null,
+                        total_declared_value: totalDeclared || null,
+                        total_cod: totalCod || null,
+                        notes: manifestNotes || null,
+                        status: 'booking',
+                      })
+                      .select('id')
+                      .single();
+
+                    if (manifestError || !manifest) {
+                      setShowManifestProgress(false);
+                      alert('Failed to create manifest record. Please try again.');
+                      return;
+                    }
+
+                    // Step 4: Insert all manifest items
+                    setManifestBookingProgress({ current: 0, total: currentRows.length, failed: 0 });
+                    let saved = 0;
+                    let failed = 0;
+
+                    for (let i = 0; i < currentRows.length; i++) {
+                      const row = currentRows[i];
+                      try {
+                        const { error: insertError } = await supabase
+                          .from('manifest_items')
+                          .insert({
+                            manifest_id: manifest.id,
+                            sort_order: i,
+                            reference_number: row.reference_number || null,
+                            item_name: row.item_name,
+                            quantity: parseInt(row.quantity) || 1,
+                            weight_kg: row.weight_kg ? parseFloat(row.weight_kg) : null,
+                            length_cm: row.length_cm ? parseFloat(row.length_cm) : null,
+                            width_cm: row.width_cm ? parseFloat(row.width_cm) : null,
+                            height_cm: row.height_cm ? parseFloat(row.height_cm) : null,
+                            cargo_type: row.cargo_type || 'standard',
+                            declared_value: row.declared_value ? parseFloat(row.declared_value) : null,
+                            cod_amount: row.cod_amount ? parseFloat(row.cod_amount) : null,
+                            recipient_name: row.recipient_name,
+                            recipient_phone: row.recipient_phone,
+                            recipient_address: row.recipient_address,
+                            recipient_lat: row.lat ?? null,
+                            recipient_lng: row.lng ?? null,
+                            delivery_notes: row.delivery_notes || null,
+                            status: 'pending',
+                          });
+                        if (insertError) throw insertError;
+                        saved++;
+                      } catch {
+                        failed++;
+                      }
+                      setManifestBookingProgress({ current: i + 1, total: currentRows.length, failed });
+                    }
+
+                    // Step 5: Update manifest status
+                    await supabase
+                      .from('delivery_manifests')
+                      .update({
+                        booked_count: saved,
+                        failed_count: failed,
+                        status: failed === 0 ? 'completed' : failed === currentRows.length ? 'draft' : 'partial',
+                      })
+                      .eq('id', manifest.id);
+
+                    setManifestComplete(true);
+                  }}
+                >
+                  {isGeocodingManifest ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Geocoding...
+                    </>
+                  ) : (
+                    <>
+                      <Package className="h-4 w-4 mr-2" />
+                      Save Manifest ({manifestRows.length} items)
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Sidebar Toggle Button */}
       <button
@@ -1292,7 +2007,6 @@ export default function OrdersPage() {
                 // Reset form
                 setPickupLocation({ address: '', contactName: '', contactPhone: '', instructions: '' });
                 setDropoffStops([{ id: '1', address: '', contactName: '', contactPhone: '', instructions: '' }]);
-                setSelectedVehicle('');
                 setRouteDistance(0);
                 setRouteDuration(0);
                 setIsScheduled(false);

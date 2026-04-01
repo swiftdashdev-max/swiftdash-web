@@ -56,15 +56,43 @@ serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-      // Fetch business name if businessId provided
+
+      // Fetch business name AND settings (including custom sms_template)
+      const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       let testBusinessName = 'SwiftDash';
+      let testSmsTemplate = '';
       if (testBusinessId) {
-        const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        const { data: biz } = await supabase.from('business_accounts').select('business_name').eq('id', testBusinessId).single();
+        const { data: biz, error: bizErr } = await supabase
+          .from('business_accounts')
+          .select('business_name, settings')
+          .eq('id', testBusinessId)
+          .single();
+        console.log('📋 Business fetch result:', JSON.stringify(biz), 'error:', bizErr?.message);
         if (biz?.business_name) testBusinessName = biz.business_name;
+        // settings is a JSONB column — parse if it came back as a string
+        const rawSettings = typeof biz?.settings === 'string' ? JSON.parse(biz.settings) : (biz?.settings || {});
+        if (rawSettings?.sms_template) testSmsTemplate = rawSettings.sms_template;
+        console.log('📝 sms_template from DB:', testSmsTemplate || '(none)');
+      } else {
+        console.warn('⚠️ No testBusinessId provided — cannot fetch custom template');
       }
-      const senderName = 'DELIVERY';
-      const testMessage = `${testBusinessName}: This is a test SMS from SwiftDash 📦. Your SMS notifications are working correctly!`;
+
+      const senderName = 'Airbridge';
+      const sampleTrackingUrl = `${appUrl}/track/SD-20260226-sample123`;
+
+      // Use custom template if set, otherwise default — same logic as production
+      let testMessage: string;
+      if (testSmsTemplate) {
+        testMessage = testSmsTemplate
+          .replace(/\{name\}/gi, 'Juan')
+          .replace(/\{tracking_url\}/gi, sampleTrackingUrl)
+          .replace(/\{business_name\}/gi, testBusinessName);
+        console.log(`📱 Using custom template. Final message: ${testMessage}`);
+      } else {
+        testMessage = `${testBusinessName}: Hi Juan! Your delivery has been booked. Track it here: ${sampleTrackingUrl}`;
+        console.log(`📱 No custom template found, using default. Final message: ${testMessage}`);
+      }
+
       const normalized = testPhoneRaw.replace(/[\s\-\(\)]/g, '').trim()
         .replace(/^\+63/, '0').replace(/^63(\d{10})$/, '0$1');
       if (!/^09\d{9}$/.test(normalized)) {
@@ -73,10 +101,12 @@ serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+      const safeTestMessage = testMessage.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FEFF}\u{1F900}-\u{1F9FF}]/gu, '').replace(/\s{2,}/g, ' ').trim();
+      console.log(`📤 Final test message after emoji strip: ${safeTestMessage}`);
       const response = await fetch(SEMAPHORE_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ apikey: smsApiKey!, number: normalized, message: testMessage, sendername: senderName }),
+        body: new URLSearchParams({ apikey: smsApiKey!, number: normalized, message: safeTestMessage, sendername: senderName }),
       });
       const result = await response.json();
       if (!response.ok || (Array.isArray(result) && result[0]?.status === 'Failed')) {
@@ -86,9 +116,14 @@ serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-      console.log(`✅ Test SMS sent to ${normalized}`);
+      console.log(`✅ Test SMS sent to ${normalized} (template: ${testSmsTemplate ? 'custom' : 'default'})`);
       return new Response(
-        JSON.stringify({ success: true, message: `Test SMS sent to ${normalized}` }),
+        JSON.stringify({ 
+          success: true, 
+          message: `Test SMS sent to ${normalized}`, 
+          templateUsed: testSmsTemplate ? 'custom' : 'default',
+          messageSent: safeTestMessage,
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -146,7 +181,7 @@ serve(async (req) => {
     const notifyPickup = settings.sms_notify_pickup === true;
     const customTemplate = settings.sms_template || '';
     // Fixed registered Semaphore sender name
-    const senderName = 'DELIVERY';
+    const senderName = 'Airbridge';
 
     // Helper: build SMS body from template or default
     const buildSmsBody = (name: string, trackingUrl: string): string => {
@@ -173,12 +208,20 @@ serve(async (req) => {
       return null;
     };
 
+    // Helper: strip emojis from SMS text.
+    // Emojis force UCS-2 encoding (70-char limit) instead of GSM-7 (160-char limit).
+    // Semaphore silently truncates UCS-2 messages that exceed 70 chars.
+    const stripEmojis = (text: string): string =>
+      text.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FEFF}\u{1F900}-\u{1F9FF}]/gu, '').replace(/\s{2,}/g, ' ').trim();
+
     // Helper: send SMS via Semaphore API
     const sendSms = async (phone: string, message: string): Promise<{ phone: string; success: boolean; messageId?: number; error?: string }> => {
       const normalized = normalizePhone(phone);
       if (!normalized) {
         return { phone, success: false, error: 'Invalid Philippine phone number' };
       }
+      const safeMessage = stripEmojis(message);
+      console.log(`📤 Sending SMS to ${normalized}: ${safeMessage}`);
       try {
         const response = await fetch(SEMAPHORE_API_URL, {
           method: 'POST',
@@ -186,7 +229,7 @@ serve(async (req) => {
           body: new URLSearchParams({
             apikey: smsApiKey!,
             number: normalized,
-            message: message,
+            message: safeMessage,
             sendername: senderName,
           }),
         });

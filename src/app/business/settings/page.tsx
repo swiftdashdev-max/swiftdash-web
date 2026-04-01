@@ -197,8 +197,9 @@ export default function SettingsPage() {
         body: JSON.stringify({ test: true, phone: testPhone.trim(), businessId }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to send test SMS');
-      toast({ title: 'Test SMS sent! ✅', description: `SMS dispatched to ${testPhone}` });
+      if (!response.ok) throw new Error(data.message || data.error || 'Failed to send test SMS');
+      const preview = data.messageSent ? `\nMessage: "${data.messageSent}"` : '';
+      toast({ title: 'Test SMS sent! ✅', description: `SMS dispatched to ${testPhone} (${data.templateUsed || 'default'} template)${preview}` });
     } catch (err: any) {
       toast({ title: 'Test SMS failed', description: err.message, variant: 'destructive' });
     } finally {
@@ -857,11 +858,11 @@ export default function SettingsPage() {
                 className="w-full min-h-[90px] rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-y"
                 value={smsTemplate}
                 onChange={(e) => setSmsTemplate(e.target.value)}
-                placeholder="{business_name}: Hi {name}! Your delivery has been booked 📦&#10;Track it here: {tracking_url}"
+                placeholder="{business_name}: Hi {name}! Your delivery has been booked. Track it here: {tracking_url}"
                 disabled={!smsOnBooking}
               />
               <p className="text-xs text-muted-foreground">
-                Available placeholders: <code className="bg-muted px-1 rounded">{'{name}'}</code>, <code className="bg-muted px-1 rounded">{'{tracking_url}'}</code>, <code className="bg-muted px-1 rounded">{'{business_name}'}</code>. Leave blank to use the default message.
+                Available placeholders: <code className="bg-muted px-1 rounded">{'{name}'}</code>, <code className="bg-muted px-1 rounded">{'{tracking_url}'}</code>, <code className="bg-muted px-1 rounded">{'{business_name}'}</code>. Leave blank to use the default message. Emojis are automatically removed to prevent SMS truncation.
               </p>
             </div>
 

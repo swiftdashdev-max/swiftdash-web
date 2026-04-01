@@ -44,7 +44,7 @@ export default function FleetMap({ drivers = [], isLoading }: FleetMapProps) {
 
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/streets-v12',
+      style: 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex',
       center: [120.9842, 14.5995], // Manila center [lng, lat]
       zoom: 12,
     });

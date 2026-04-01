@@ -23,6 +23,8 @@ import {
   Clock,
   UserCheck,
   Navigation,
+  Key,
+  BookOpen,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -190,6 +192,18 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
                       <Settings className="mr-2 h-4 w-4" />
                       <span>Settings</span>
                     </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/business/settings/api" className="cursor-pointer">
+                      <Key className="mr-2 h-4 w-4" />
+                      <span>API &amp; Webhooks</span>
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <a href="/docs" target="_blank" rel="noopener noreferrer" className="cursor-pointer">
+                      <BookOpen className="mr-2 h-4 w-4" />
+                      <span>API Docs</span>
+                    </a>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleLogout} className="cursor-pointer">
