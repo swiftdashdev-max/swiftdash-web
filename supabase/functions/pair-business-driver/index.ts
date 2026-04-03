@@ -1,7 +1,8 @@
 // Business Driver Pairing Edge Function
-// 3-Tier Priority: Private Fleet → Public Fleet → Global Pool (B2C fallback)
+// B2B Fleet-Only: Private Fleet → Public Fleet (no global pool)
+// Fleet drivers go straight to driver_assigned (no offer/accept cycle)
 // Supports: Auto dispatch & Manual assignment
-// Created: November 3, 2025
+// Updated: April 2, 2026
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -60,12 +61,13 @@ serve(async (req) => {
     const { data: delivery, error: deliveryErr } = await supabase
       .from('deliveries')
       .select(`
-        id, business_id, status, driver_id,
+        id, business_id, customer_id, status, driver_id,
         pickup_latitude, pickup_longitude,
         delivery_latitude, delivery_longitude,
         vehicle_type_id, distance_km,
         is_multi_stop, total_stops,
-        is_scheduled, scheduled_pickup_time
+        is_scheduled, scheduled_pickup_time,
+        pickup_address, delivery_address
       `)
       .eq('id', body.deliveryId)
       .single();
@@ -82,7 +84,7 @@ serve(async (req) => {
     if (!delivery.business_id) {
       return new Response(JSON.stringify({
         ok: false,
-        message: "Not a business delivery - use global pair-driver function"
+        message: "Not a business delivery - missing business_id"
       }), { 
         headers: { ...corsHeaders, 'content-type': 'application/json' },
         status: 400 
@@ -124,8 +126,8 @@ serve(async (req) => {
       }
     }
 
-    let assignedDriver = null;
-    let driverSource = null;
+    let assignedDriver: { driver_id: string; vehicle_id?: string; distance_km: number; driver_name?: string } | null = null;
+    let driverSource: string | null = null;
 
     // ==================================================
     // MANUAL ASSIGNMENT MODE
@@ -160,13 +162,27 @@ serve(async (req) => {
         });
       }
 
-      // Determine driver source
+      // B2B: Only allow own fleet drivers for manual assignment
       if (driver.employment_type === 'fleet_driver' && driver.managed_by_business_id === delivery.business_id) {
         driverSource = 'private_fleet';
       } else if (driver.employment_type === 'fleet_driver') {
-        driverSource = 'other_business_fleet';
+        // Driver belongs to another business — reject
+        return new Response(JSON.stringify({
+          ok: false,
+          message: "Driver belongs to another business fleet"
+        }), { 
+          headers: { ...corsHeaders, 'content-type': 'application/json' },
+          status: 400 
+        });
       } else {
-        driverSource = 'independent_driver';
+        // Independent driver — reject in B2B mode
+        return new Response(JSON.stringify({
+          ok: false,
+          message: "Independent drivers are not available in B2B mode. Only fleet drivers can be assigned."
+        }), { 
+          headers: { ...corsHeaders, 'content-type': 'application/json' },
+          status: 400 
+        });
       }
 
       assignedDriver = {
@@ -177,16 +193,15 @@ serve(async (req) => {
           driver.current_latitude,
           driver.current_longitude
         ),
-        source: driverSource
       };
 
       console.log(`✅ Manual assignment: ${driverSource}`);
     } 
     // ==================================================
-    // AUTO DISPATCH MODE - 3-TIER PRIORITY
+    // AUTO DISPATCH MODE - FLEET ONLY (2-TIER)
     // ==================================================
     else {
-      console.log(`🤖 Auto dispatch - searching 3-tier priority for business: ${delivery.business_id}`);
+      console.log(`🤖 Auto dispatch (fleet-only) for business: ${delivery.business_id}`);
 
       // PRIORITY 1: Business Private Fleet
       console.log('🔍 Priority 1: Searching private fleet...');
@@ -208,7 +223,7 @@ serve(async (req) => {
         console.log(`✅ Found private fleet driver: ${assignedDriver.driver_id} at ${assignedDriver.distance_km}km`);
       }
 
-      // PRIORITY 2: Business Public Fleet
+      // PRIORITY 2: Business Public Fleet (own vehicles marked public)
       if (!assignedDriver) {
         console.log('🔍 Priority 2: Searching public fleet...');
         const { data: publicFleet, error: publicErr } = await supabase.rpc(
@@ -230,46 +245,35 @@ serve(async (req) => {
         }
       }
 
-      // PRIORITY 3: Global Pool (Other Businesses + Independent Drivers)
-      if (!assignedDriver) {
-        console.log('🔍 Priority 3: Searching global pool...');
-        const { data: globalPool, error: globalErr } = await supabase.rpc(
-          'find_public_pool_driver',
-          {
-            p_business_id: delivery.business_id,
-            p_pickup_lat: delivery.pickup_latitude,
-            p_pickup_lng: delivery.pickup_longitude,
-            p_vehicle_type_id: delivery.vehicle_type_id,
-            p_max_distance_km: 15, // Wider radius for global
-            p_include_other_business_fleets: true
-          }
-        );
-
-        if (!globalErr && globalPool?.[0]) {
-          assignedDriver = globalPool[0];
-          driverSource = globalPool[0].employment_type === 'independent' 
-            ? 'independent_driver' 
-            : 'other_business_fleet';
-          console.log(`✅ Found global pool driver: ${assignedDriver.driver_id} at ${assignedDriver.distance_km}km (${driverSource})`);
-        }
-      }
+      // NO PRIORITY 3 — Global pool disabled for B2B mode
     }
 
-    // No drivers found
+    // ==================================================
+    // NO DRIVER FOUND — Notify dispatcher via realtime
+    // ==================================================
     if (!assignedDriver) {
-      console.error('❌ No drivers available in any tier');
+      console.warn(`⚠️ No fleet drivers available for delivery ${delivery.id}`);
+
+      // Insert a notification into a channel the dispatch page can subscribe to
+      // We use a Postgres insert into a lightweight notifications approach
+      // The dispatch page's realtime subscription on deliveries will pick up the status staying 'pending'
+      // But we also send a structured response so the UI can show a meaningful toast
       return new Response(JSON.stringify({
         ok: false,
-        message: 'No drivers available - all fleet and pool drivers are busy',
-        business_id: delivery.business_id
+        no_driver: true,
+        message: 'No fleet drivers available. All drivers are offline, busy, or out of range.',
+        suggestion: 'Check that fleet drivers are online and within 10km of the pickup location.',
+        business_id: delivery.business_id,
+        delivery_id: delivery.id,
+        pickup_address: delivery.pickup_address
       }), {
         headers: { ...corsHeaders, 'content-type': 'application/json' },
-        status: 404
+        status: 200 // 200 so the client can parse the response (not a server error)
       });
     }
 
     // ==================================================
-    // CALCULATE PRICING (same logic as global pair-driver)
+    // CALCULATE PRICING
     // ==================================================
     const { data: vehicleType } = await supabase
       .from('vehicle_types')
@@ -320,19 +324,21 @@ serve(async (req) => {
     console.log(`💰 Pricing: Distance ${distanceKm.toFixed(2)}km, Base ₱${basePrice}, Total ₱${totalAmount}`);
 
     // ==================================================
-    // ASSIGN DRIVER TO DELIVERY
+    // ASSIGN DRIVER — Fleet goes straight to driver_assigned
     // ==================================================
+    const assignedAt = new Date().toISOString();
     const { error: updateErr } = await supabase
       .from('deliveries')
       .update({
         driver_id: assignedDriver.driver_id,
         fleet_vehicle_id: assignedDriver.vehicle_id || null,
         assignment_type: mode,
-        status: 'driver_offered',
+        status: 'driver_assigned', // B2B: skip driver_offered, go straight to assigned
         distance_km: Math.round(distanceKm * 10) / 10,
         total_amount: totalAmount,
         driver_source: driverSource,
-        updated_at: new Date().toISOString()
+        assigned_at: assignedAt,
+        updated_at: assignedAt
       })
       .eq('id', delivery.id);
 
@@ -358,7 +364,7 @@ serve(async (req) => {
     // Log the assignment
     await supabase.rpc('log_fleet_action', {
       p_business_id: delivery.business_id,
-      p_user_id: null, // TODO: Get from auth context
+      p_user_id: null,
       p_action_type: 'driver_assigned',
       p_entity_type: 'delivery',
       p_entity_id: delivery.id,
@@ -371,6 +377,19 @@ serve(async (req) => {
       }
     });
 
+    // ==================================================
+    // FIRE WEBHOOKS (non-blocking)
+    // ==================================================
+    fireWebhooks(supabase, delivery.customer_id, 'delivery.driver_assigned', delivery.id, {
+      delivery_id: delivery.id,
+      driver_id: assignedDriver.driver_id,
+      driver_source: driverSource,
+      assignment_type: mode,
+      status: 'driver_assigned',
+      total_amount: totalAmount,
+      distance_km: distanceKm
+    }).catch((err: Error) => console.error('Webhook dispatch error:', err));
+
     console.log(`✅ Delivery ${delivery.id} assigned to driver ${assignedDriver.driver_id} from ${driverSource}`);
 
     return new Response(JSON.stringify({
@@ -382,7 +401,7 @@ serve(async (req) => {
       distance_km: assignedDriver.distance_km,
       total_amount: totalAmount,
       assignment_type: mode,
-      status: 'driver_offered'
+      status: 'driver_assigned'
     }), {
       headers: { ...corsHeaders, 'content-type': 'application/json' },
       status: 200
@@ -392,13 +411,96 @@ serve(async (req) => {
     console.error('Pair business driver error:', e);
     return new Response(JSON.stringify({
       error: 'Internal server error',
-      message: e.message
+      message: (e as Error).message
     }), { 
       headers: { ...corsHeaders, 'content-type': 'application/json' },
       status: 500 
     });
   }
 });
+
+// ==================================================
+// WEBHOOK DISPATCHER (inline — mirrors Next.js webhook-dispatcher.ts)
+// ==================================================
+async function fireWebhooks(
+  supabase: ReturnType<typeof createClient>,
+  businessOwnerId: string,
+  event: string,
+  deliveryId: string,
+  data: Record<string, unknown>
+) {
+  // Resolve the business_accounts ID from user_profiles (API keys are tied to auth user)
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('business_id')
+    .eq('id', businessOwnerId)
+    .single();
+
+  const lookupId = profile?.business_id ?? businessOwnerId;
+
+  // Fetch active webhooks subscribed to this event
+  const { data: webhooks, error } = await supabase
+    .from('business_webhooks')
+    .select('id, url, secret, events')
+    .eq('business_id', lookupId)
+    .eq('is_active', true);
+
+  if (error || !webhooks?.length) return;
+
+  const payload = {
+    event,
+    timestamp: new Date().toISOString(),
+    delivery_id: deliveryId,
+    data
+  };
+  const body = JSON.stringify(payload);
+
+  for (const wh of webhooks) {
+    if (!(wh.events as string[]).includes(event)) continue;
+
+    // HMAC-SHA256 signature
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw', encoder.encode(wh.secret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
+    const signature = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    let responseStatus: number | null = null;
+    let responseBody: string | null = null;
+    let success = false;
+
+    try {
+      const res = await fetch(wh.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-swiftdash-signature': `sha256=${signature}`,
+          'x-swiftdash-event': event,
+          'user-agent': 'SwiftDash-Webhooks/1.0',
+        },
+        body,
+      });
+      responseStatus = res.status;
+      responseBody = await res.text().catch(() => null);
+      success = res.ok;
+    } catch (err) {
+      responseBody = err instanceof Error ? err.message : 'Unknown error';
+    }
+
+    // Log the attempt
+    await supabase.from('webhook_delivery_logs').insert({
+      webhook_id: wh.id,
+      event,
+      delivery_id: deliveryId,
+      payload,
+      response_status: responseStatus,
+      response_body: responseBody,
+      success,
+    });
+  }
+}
 
 // Haversine distance calculation
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

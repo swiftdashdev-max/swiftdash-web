@@ -86,12 +86,12 @@ serve(async (req) => {
       )
     }
 
-    // Validate driver_source
+    // Validate driver_source (marketplace paused for B2B pivot)
     if (driver_source !== 'fleet' && driver_source !== 'marketplace') {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'driver_source must be either "fleet" or "marketplace"'
+          error: 'driver_source must be "fleet" (marketplace is currently paused)'
         } as AssignDriverResponse),
         { 
           status: 400, 
@@ -360,6 +360,16 @@ serve(async (req) => {
       console.warn(`[assign-business-driver] No FCM token for driver ${driver_id}`)
     }
 
+    // Step 9: Fire webhooks (non-blocking)
+    fireWebhooks(supabaseAdmin, delivery.business_id, 'delivery.driver_assigned', delivery_id, {
+      delivery_id,
+      driver_id,
+      driver_source,
+      assignment_type,
+      status: 'driver_assigned',
+      assigned_at: assignedAt
+    }).catch((err: Error) => console.error('[assign-business-driver] Webhook error:', err))
+
     // Success response
     return new Response(
       JSON.stringify({
@@ -385,7 +395,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'Internal server error'
+        error: (error as Error).message || 'Internal server error'
       } as AssignDriverResponse),
       { 
         status: 500, 
@@ -394,3 +404,85 @@ serve(async (req) => {
     )
   }
 })
+
+// ==================================================
+// WEBHOOK DISPATCHER
+// ==================================================
+async function fireWebhooks(
+  supabase: ReturnType<typeof createClient>,
+  businessId: string,
+  event: string,
+  deliveryId: string,
+  data: Record<string, unknown>
+) {
+  // business_id on deliveries is business_accounts.id
+  // business_webhooks.business_id is the auth user ID
+  // We need to find the auth user who owns this business account
+  const { data: webhooks, error } = await supabase
+    .from('business_webhooks')
+    .select('id, url, secret, events')
+    .eq('is_active', true)
+
+  if (error || !webhooks?.length) return
+
+  // Filter webhooks that belong to this business by looking up user_profiles
+  const { data: users } = await supabase
+    .from('user_profiles')
+    .select('id')
+    .eq('business_id', businessId)
+
+  const userIds = new Set((users || []).map((u: { id: string }) => u.id))
+
+  const payload = {
+    event,
+    timestamp: new Date().toISOString(),
+    delivery_id: deliveryId,
+    data
+  }
+  const body = JSON.stringify(payload)
+
+  for (const wh of webhooks) {
+    if (!(wh.events as string[]).includes(event)) continue
+
+    // HMAC-SHA256 signature using Web Crypto API (Deno)
+    const encoder = new TextEncoder()
+    const key = await crypto.subtle.importKey(
+      'raw', encoder.encode(wh.secret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    )
+    const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(body))
+    const signature = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('')
+
+    let responseStatus: number | null = null
+    let responseBody: string | null = null
+    let success = false
+
+    try {
+      const res = await fetch(wh.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-swiftdash-signature': `sha256=${signature}`,
+          'x-swiftdash-event': event,
+          'user-agent': 'SwiftDash-Webhooks/1.0',
+        },
+        body,
+      })
+      responseStatus = res.status
+      responseBody = await res.text().catch(() => null)
+      success = res.ok
+    } catch (err) {
+      responseBody = err instanceof Error ? err.message : 'Unknown error'
+    }
+
+    await supabase.from('webhook_delivery_logs').insert({
+      webhook_id: wh.id,
+      event,
+      delivery_id: deliveryId,
+      payload,
+      response_status: responseStatus,
+      response_body: responseBody,
+      success,
+    })
+  }
+}

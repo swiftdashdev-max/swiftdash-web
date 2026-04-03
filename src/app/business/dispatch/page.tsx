@@ -1074,14 +1074,30 @@ export default function DispatchPage() {
     try {
       setAssigning(true);
 
+      let successCount = 0;
+      let failCount = 0;
+      let noDriverCount = 0;
+
       // Use Edge Function for auto-assignment
       for (const deliveryId of selectedDeliveries) {
         try {
           const result = await pairDriver(deliveryId);
-          console.log(`✅ Successfully assigned driver to delivery ${deliveryId}:`, result);
-          // Send tracking notifications — each multi-stop recipient gets their own link
-          sendTrackingNotifications(deliveryId);
+          
+          // Check if no driver was available (edge function returns ok:false, no_driver:true)
+          if (result && !result.ok && result.no_driver) {
+            noDriverCount++;
+            console.warn(`⚠️ No fleet driver available for ${deliveryId}: ${result.message}`);
+          } else if (result && result.ok) {
+            successCount++;
+            console.log(`✅ Successfully assigned driver to delivery ${deliveryId}:`, result);
+            // Send tracking notifications — each multi-stop recipient gets their own link
+            sendTrackingNotifications(deliveryId);
+          } else {
+            failCount++;
+            console.warn(`⚠️ Assignment returned unexpected result for ${deliveryId}:`, result);
+          }
         } catch (err) {
+          failCount++;
           console.error(`❌ Error calling pair-driver for ${deliveryId}:`, err);
         }
       }
@@ -1090,7 +1106,28 @@ export default function DispatchPage() {
       await fetchData();
       setShowAssignModal(false);
       setSelectedDeliveries([]);
-      toast({ title: '✅ Assigned', description: `${selectedDeliveries.length} delivery(ies) assigned successfully.` });
+
+      // Show appropriate toast based on results
+      if (noDriverCount > 0 && successCount === 0) {
+        toast({ 
+          title: '⚠️ No Fleet Drivers Available', 
+          description: `${noDriverCount} delivery(ies) could not be assigned. Ensure drivers are online and within range.`,
+          variant: 'destructive'
+        });
+      } else if (noDriverCount > 0 && successCount > 0) {
+        toast({ 
+          title: '⚠️ Partial Assignment', 
+          description: `${successCount} assigned, ${noDriverCount} had no available driver. Check fleet status.`,
+        });
+      } else if (failCount > 0) {
+        toast({ 
+          title: '⚠️ Some Assignments Failed', 
+          description: `${successCount} assigned, ${failCount} failed.`,
+          variant: 'destructive'
+        });
+      } else {
+        toast({ title: '✅ Assigned', description: `${successCount} delivery(ies) assigned successfully.` });
+      }
     } catch (error) {
       console.error('❌ Error auto-assigning:', error);
       toast({ title: 'Assignment failed', description: String(error), variant: 'destructive' });
