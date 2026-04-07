@@ -36,23 +36,19 @@ export async function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     const path = url.pathname;
 
-    // Allow _next, static assets, api routes, and tracking pages through
+    // Allow _next, static assets and api routes through
     if (
       path.startsWith('/_next') ||
       path.startsWith('/api') ||
       path === '/favicon.ico'
     ) {
       // Fall through to normal handling
+    } else if (path.startsWith('/track')) {
+      // Let tracking pages pass through normally on subdomains
     } else {
-      // Rewrite: jollibee.swiftdashdms.com/ → /book/jollibee
-      // Rewrite: jollibee.swiftdashdms.com/track/SD1234 → /track/SD1234 (allow tracking on subdomain)
-      if (path.startsWith('/track')) {
-        // Let tracking pages pass through normally
-      } else {
-        url.pathname = `/book/${subdomain}${path === '/' ? '' : path}`;
-        const response = NextResponse.rewrite(url);
-        return response;
-      }
+      // Rewrite: welinc.swiftdashdms.com/ → /book/welinc
+      url.pathname = `/book/${subdomain}${path === '/' ? '' : path}`;
+      return NextResponse.rewrite(url);
     }
   }
 
