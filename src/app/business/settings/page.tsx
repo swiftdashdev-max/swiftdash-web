@@ -154,6 +154,15 @@ export default function SettingsPage() {
   const [fleetSaving, setFleetSaving] = useState(false);
   const [fleetImageUploading, setFleetImageUploading] = useState<string | null>(null);
 
+  // Custom domain
+  const [customDomain, setCustomDomain] = useState('');
+  const [domainStatus, setDomainStatus] = useState<'none' | 'pending' | 'verified' | 'failed'>('none');
+  const [domainInput, setDomainInput] = useState('');
+  const [domainSaving, setDomainSaving] = useState(false);
+  const [domainVerifying, setDomainVerifying] = useState(false);
+  const [domainRemoving, setDomainRemoving] = useState(false);
+  const [domainDnsRecords, setDomainDnsRecords] = useState<{ cname: string; txtName?: string; txtValue?: string } | null>(null);
+
   const handleLogoFileChange = async (file: File) => {
     if (!businessId) return;
     if (!file.type.startsWith('image/')) {
@@ -216,7 +225,7 @@ export default function SettingsPage() {
         setLoading(true);
         const { data, error } = await supabase
           .from('business_accounts')
-          .select('business_name, business_phone, settings, slug, storefront_enabled, storefront_settings')
+          .select('business_name, business_phone, settings, slug, storefront_enabled, storefront_settings, custom_domain, domain_verification_status')
           .eq('id', businessId)
           .single();
 
@@ -272,6 +281,11 @@ export default function SettingsPage() {
           setStorefrontBookingNote(sf.booking_note || '');
           setStorefrontBannerImageUrl(sf.banner_image_url || '');
           setStorefrontPaymentMethods(Array.isArray(sf.payment_methods) ? sf.payment_methods : ['cash', 'maya']);
+
+          // Custom domain
+          setCustomDomain(data.custom_domain || '');
+          setDomainInput(data.custom_domain || '');
+          setDomainStatus((data.domain_verification_status as any) || 'none');
 
           // Fetch fleet vehicles & pricing
           const [vtRes, bvpRes] = await Promise.all([
@@ -563,6 +577,125 @@ export default function SettingsPage() {
       toast({ title: 'Error', description: msg, variant: 'destructive' });
     } finally {
       setStorefrontSaving(false);
+    }
+  };
+
+  // ── Custom Domain handlers ──────────────────────────────────
+  const handleDomainConnect = async () => {
+    if (!businessId || !domainInput.trim()) return;
+    try {
+      setDomainSaving(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast({ title: 'Not authenticated', description: 'Please sign in again', variant: 'destructive' });
+        return;
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ action: 'add', domain: domainInput.trim() }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to connect domain');
+
+      setCustomDomain(data.domain);
+      setDomainStatus('pending');
+      // Store the actual DNS records Vercel requires
+      const vercel = data.vercel || {};
+      setDomainDnsRecords({
+        cname: vercel.cnames?.[0] || 'domains.swiftdashdms.com',
+        txtName: vercel.verification?.[0]?.domain ? `_vercel.${data.domain.split('.').slice(1).join('.')}` : undefined,
+        txtValue: vercel.verification?.[0]?.value || undefined,
+      });
+      toast({
+        title: 'Domain connected! 🎉',
+        description: 'Check the DNS instructions below to go live.',
+      });
+    } catch (err: any) {
+      toast({ title: 'Failed to connect domain', description: err.message, variant: 'destructive' });
+    } finally {
+      setDomainSaving(false);
+    }
+  };
+
+  const handleDomainVerify = async () => {
+    if (!businessId) return;
+    try {
+      setDomainVerifying(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ action: 'verify' }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Verification failed');
+
+      setDomainStatus(data.status);
+      // Refresh DNS records in case Vercel updated them
+      const vd = data.vercel_domain || {};
+      if (vd.cnames || vd.verification) {
+        setDomainDnsRecords({
+          cname: vd.cnames?.[0] || 'domains.swiftdashdms.com',
+          txtName: vd.verification?.[0]?.domain ? `_vercel` : undefined,
+          txtValue: vd.verification?.[0]?.value || undefined,
+        });
+      }
+      if (data.verified) {
+        toast({ title: 'Domain verified! ✅', description: `${customDomain} is now active` });
+      } else {
+        toast({ title: 'Not verified yet', description: 'DNS changes can take up to 48 hours to propagate. Try again later.', variant: 'destructive' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Verification failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setDomainVerifying(false);
+    }
+  };
+
+  const handleDomainRemove = async () => {
+    if (!businessId) return;
+    if (!confirm('Remove custom domain? Your storefront will still be accessible via the swiftdashdms.com subdomain.')) return;
+    try {
+      setDomainRemoving(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ action: 'remove' }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to remove domain');
+
+      setCustomDomain('');
+      setDomainInput('');
+      setDomainStatus('none');
+      setDomainDnsRecords(null);
+      toast({ title: 'Domain removed', description: 'Custom domain has been disconnected' });
+    } catch (err: any) {
+      toast({ title: 'Failed to remove domain', description: err.message, variant: 'destructive' });
+    } finally {
+      setDomainRemoving(false);
     }
   };
 
@@ -1507,6 +1640,128 @@ export default function SettingsPage() {
               </div>
             </div>
 
+            {/* ── Custom Domain ── */}
+            <div className="rounded-lg border bg-gradient-to-r from-purple-50/50 to-blue-50/50 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Globe className="h-4 w-4 text-purple-600" />
+                <p className="text-sm font-semibold">Custom Domain</p>
+                {domainStatus === 'verified' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                    <CheckCircle2 className="h-3 w-3" />Active
+                  </span>
+                )}
+                {domainStatus === 'pending' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+                    <Loader2 className="h-3 w-3 animate-spin" />Pending DNS
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Use your own domain (e.g., <code className="bg-white/70 px-1 rounded">book.yourbusiness.com</code>) for your storefront
+              </p>
+
+              {customDomain ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 p-2.5 bg-white rounded-md border">
+                    <Globe className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium flex-1">{customDomain}</span>
+                    {domainStatus === 'verified' ? (
+                      <span className="text-xs text-green-600 font-medium">✓ Live</span>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleDomainVerify}
+                        disabled={domainVerifying}
+                        className="h-7 text-xs"
+                      >
+                        {domainVerifying ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Check DNS
+                      </Button>
+                    )}
+                  </div>
+
+                  {domainStatus === 'pending' && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-3">
+                      <p className="text-xs font-semibold text-amber-800">⚡ DNS Setup Required</p>
+                      <p className="text-xs text-amber-700">Add these records in your domain registrar&apos;s DNS settings:</p>
+
+                      {/* CNAME record */}
+                      <div>
+                        <p className="text-xs font-medium text-amber-800 mb-1">1. CNAME record</p>
+                        <div className="grid grid-cols-[56px_1fr] gap-x-3 gap-y-1 text-xs font-mono bg-white rounded p-2 border">
+                          <span className="text-muted-foreground">Type</span>
+                          <span className="font-semibold">CNAME</span>
+                          <span className="text-muted-foreground">Name</span>
+                          <span className="font-semibold">{customDomain.split('.')[0]}</span>
+                          <span className="text-muted-foreground">Value</span>
+                          <span className="font-semibold text-blue-600 break-all">{domainDnsRecords?.cname || 'domains.swiftdashdms.com'}</span>
+                        </div>
+                      </div>
+
+                      {/* TXT record — only shown if Vercel requires ownership verification */}
+                      {domainDnsRecords?.txtValue && (
+                        <div>
+                          <p className="text-xs font-medium text-amber-800 mb-1">2. TXT record <span className="font-normal text-amber-700">(ownership verification)</span></p>
+                          <div className="grid grid-cols-[56px_1fr] gap-x-3 gap-y-1 text-xs font-mono bg-white rounded p-2 border">
+                            <span className="text-muted-foreground">Type</span>
+                            <span className="font-semibold">TXT</span>
+                            <span className="text-muted-foreground">Name</span>
+                            <span className="font-semibold">{domainDnsRecords.txtName || '_vercel'}</span>
+                            <span className="text-muted-foreground">Value</span>
+                            <span className="font-semibold text-purple-600 break-all">{domainDnsRecords.txtValue}</span>
+                          </div>
+                          <p className="text-xs text-amber-600 mt-1">This domain was previously used on another platform. The TXT record proves you own it. You can remove it after verification.</p>
+                        </div>
+                      )}
+
+                      <p className="text-xs text-amber-600">
+                        DNS changes can take up to 48 hours. Click &quot;Check DNS&quot; once configured.
+                      </p>
+                    </div>
+                  )}
+
+                  {domainStatus === 'verified' && (
+                    <div className="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded-md p-2 border border-green-200">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>Your storefront is live at <a href={`https://${customDomain}`} target="_blank" rel="noopener noreferrer" className="font-medium underline">{customDomain}</a></span>
+                    </div>
+                  )}
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleDomainRemove}
+                    disabled={domainRemoving}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 h-7 text-xs"
+                  >
+                    {domainRemoving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <X className="h-3 w-3 mr-1" />}
+                    Remove Custom Domain
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={domainInput}
+                    onChange={(e) => setDomainInput(e.target.value.toLowerCase().trim())}
+                    placeholder="book.yourbusiness.com"
+                    className="flex-1 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={handleDomainConnect}
+                    disabled={domainSaving || !domainInput.trim()}
+                  >
+                    {domainSaving ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />Connecting...</>
+                    ) : (
+                      <><LinkIcon className="h-3.5 w-3.5 mr-1" />Connect</>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+
             <Separator />
 
             {/* ── Content & Branding ── */}
@@ -1630,15 +1885,22 @@ export default function SettingsPage() {
             {/* Save storefront */}
             <div className="flex items-center justify-between">
               {storefrontEnabled && storefrontSlug.length >= 3 && (
-                <a
-                  href={`https://${storefrontSlug}.swiftdashdms.com`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:underline flex items-center gap-1"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  Open Storefront
-                </a>
+                <div className="flex items-center gap-3">
+                  <a
+                    href={`https://${customDomain && domainStatus === 'verified' ? customDomain : `${storefrontSlug}.swiftdashdms.com`}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open Storefront
+                  </a>
+                  {customDomain && domainStatus === 'verified' && (
+                    <span className="text-xs text-muted-foreground">
+                      ({customDomain})
+                    </span>
+                  )}
+                </div>
               )}
               <div className="flex-1" />
               <Button onClick={handleStorefrontSave} disabled={storefrontSaving} size="sm">
