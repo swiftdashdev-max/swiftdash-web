@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { validateBody, WEBHOOK_UPDATE_RULES, validationErrorResponse } from '@/lib/api-validation';
 
 const ALLOWED_EVENTS = [
   'delivery.created',
@@ -56,10 +57,19 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
+  // Per-field validation
+  const validation = validateBody(body as Record<string, unknown>, WEBHOOK_UPDATE_RULES);
+  if (!validation.valid) {
+    return NextResponse.json(validationErrorResponse(validation.errors), { status: 400 });
+  }
+
   if (body.events) {
     const invalid = body.events.filter((e) => !(ALLOWED_EVENTS as readonly string[]).includes(e));
     if (invalid.length) {
-      return NextResponse.json({ error: `Invalid events: ${invalid.join(', ')}` }, { status: 400 });
+      return NextResponse.json(
+        validationErrorResponse([{ field: 'events', message: `Invalid events: ${invalid.join(', ')}`, code: 'INVALID_VALUE' }]),
+        { status: 400 }
+      );
     }
   }
 

@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { dispatchWebhook } from '@/lib/webhook-dispatcher';
+import { validateBody, DELIVERY_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
 
 function serviceClient() {
   return createClient(
@@ -75,17 +76,9 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Validate required fields ─────────────────────────────────────────────
-  const required = [
-    'vehicleTypeId',
-    'pickupAddress', 'pickupLat', 'pickupLng', 'pickupContactName', 'pickupContactPhone',
-    'dropoffAddress', 'dropoffLat', 'dropoffLng', 'dropoffContactName', 'dropoffContactPhone',
-  ];
-  const missing = required.filter((f) => !body[f]);
-  if (missing.length) {
-    return NextResponse.json(
-      { error: `Missing required fields: ${missing.join(', ')}`, code: 'MISSING_FIELD' },
-      { status: 400 }
-    );
+  const validation = validateBody(body, DELIVERY_CREATE_RULES);
+  if (!validation.valid) {
+    return NextResponse.json(validationErrorResponse(validation.errors), { status: 400 });
   }
 
   const supabase = serviceClient();

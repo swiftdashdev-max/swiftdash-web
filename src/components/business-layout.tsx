@@ -283,8 +283,8 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
 
       {/* Main Content */}
       <main className={
-        currentPath === '/business/orders' || currentPath === '/business/tracking'
-          ? '' // Full width, no padding for orders and tracking pages
+        currentPath === '/business/orders' || currentPath === '/business/tracking' || currentPath === '/business/dispatch'
+          ? '' // Full width, no padding for orders, tracking, and dispatch pages
           : 'container mx-auto px-4 py-6 max-w-screen-2xl'
       }>
         {children}

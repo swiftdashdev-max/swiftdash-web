@@ -14,6 +14,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { randomBytes } from 'crypto';
+import { validateBody, WEBHOOK_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
 
 const ALLOWED_EVENTS = [
   'delivery.created',
@@ -86,7 +87,16 @@ export async function POST(req: NextRequest) {
   }
 
   if (!body.url) {
-    return NextResponse.json({ error: 'url is required', code: 'MISSING_FIELD' }, { status: 400 });
+    return NextResponse.json(
+      validationErrorResponse([{ field: 'url', message: 'Required', code: 'REQUIRED' }]),
+      { status: 400 }
+    );
+  }
+
+  // Per-field validation
+  const validation = validateBody(body as Record<string, unknown>, WEBHOOK_CREATE_RULES);
+  if (!validation.valid) {
+    return NextResponse.json(validationErrorResponse(validation.errors), { status: 400 });
   }
 
   // Validate URL
@@ -94,7 +104,10 @@ export async function POST(req: NextRequest) {
     const u = new URL(body.url);
     if (u.protocol !== 'https:') throw new Error('HTTPS required');
   } catch {
-    return NextResponse.json({ error: 'url must be a valid HTTPS URL', code: 'INVALID_URL' }, { status: 400 });
+    return NextResponse.json(
+      validationErrorResponse([{ field: 'url', message: 'Must be a valid HTTPS URL', code: 'INVALID_FORMAT' }]),
+      { status: 400 }
+    );
   }
 
   // Validate events
@@ -102,7 +115,7 @@ export async function POST(req: NextRequest) {
   const invalidEvents = events.filter((e) => !(ALLOWED_EVENTS as readonly string[]).includes(e));
   if (invalidEvents.length) {
     return NextResponse.json(
-      { error: `Invalid events: ${invalidEvents.join(', ')}`, code: 'INVALID_EVENT' },
+      validationErrorResponse([{ field: 'events', message: `Invalid events: ${invalidEvents.join(', ')}`, code: 'INVALID_VALUE' }]),
       { status: 400 }
     );
   }

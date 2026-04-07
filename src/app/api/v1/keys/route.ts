@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { generateApiKey } from '@/lib/api-auth';
+import { validateBody, API_KEY_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
 
 function serviceClient() {
   return createClient(
@@ -54,16 +55,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  if (!body.name?.trim()) {
-    return NextResponse.json({ error: 'name is required', code: 'MISSING_FIELD' }, { status: 400 });
+  const validation = validateBody(body as Record<string, unknown>, API_KEY_CREATE_RULES);
+  if (!validation.valid) {
+    return NextResponse.json(validationErrorResponse(validation.errors), { status: 400 });
   }
 
-  const result = await generateApiKey(businessId, body.name.trim());
+  const name = body.name!.trim();
+  const result = await generateApiKey(businessId, name);
 
   return NextResponse.json({
     data: {
       id:       result.keyId,
-      name:     body.name.trim(),
+      name,
       key:      result.rawKey,    // shown ONCE — user must copy it now
       prefix:   result.prefix,
       is_active: true,

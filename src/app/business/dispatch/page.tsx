@@ -96,6 +96,10 @@ import {
   ClipboardList,
   Printer,
   Eye,
+  Camera,
+  ImageIcon,
+  Map as MapIcon,
+  List,
 } from 'lucide-react';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
@@ -105,6 +109,7 @@ import { DateRange } from 'react-day-picker';
 import { formatDuration } from '@/lib/mapbox-routing';
 import { format } from 'date-fns';
 import jsPDF from 'jspdf';
+import { DispatchMapView } from '@/components/dispatch-map-view';
 
 interface Delivery {
   id: string;
@@ -139,6 +144,9 @@ interface Delivery {
   package_description?: string;
   delivery_notes?: string;
   estimated_duration?: number;
+  pickup_proof_photo_url?: string;
+  proof_photo_url?: string;
+  signature_data?: string;
 }
 
 interface DeliveryStop {
@@ -231,6 +239,9 @@ export default function DispatchPage() {
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [cancelTargetIds, setCancelTargetIds] = useState<string[]>([]);
   const [isBatchCancelling, setIsBatchCancelling] = useState(false);
+
+  // View mode toggle
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
 
   // Server-side status counts
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({
@@ -478,7 +489,7 @@ export default function DispatchPage() {
       
       let deliveriesQuery = supabase
         .from('deliveries')
-        .select('id, tracking_number, status, pickup_address, delivery_address, pickup_latitude, pickup_longitude, delivery_latitude, delivery_longitude, vehicle_type_id, distance_km, total_price, is_scheduled, scheduled_pickup_time, created_at, driver_id, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, is_multi_stop, total_stops, business_id, fleet_vehicle_id, payment_status, payment_method, payment_by, delivery_fee, total_amount, package_description, delivery_notes, estimated_duration')
+        .select('id, tracking_number, status, pickup_address, delivery_address, pickup_latitude, pickup_longitude, delivery_latitude, delivery_longitude, vehicle_type_id, distance_km, total_price, is_scheduled, scheduled_pickup_time, created_at, driver_id, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, is_multi_stop, total_stops, business_id, fleet_vehicle_id, payment_status, payment_method, payment_by, delivery_fee, total_amount, package_description, delivery_notes, estimated_duration, pickup_proof_photo_url, proof_photo_url, signature_data')
         .eq('business_id', businessId)
         .order(sortColumn, { ascending: sortDirection === 'asc' })
         .range(from, to);
@@ -1993,12 +2004,12 @@ export default function DispatchPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className={viewMode === 'map' ? 'flex flex-col h-[calc(100vh-64px)]' : 'space-y-6 container mx-auto px-4 py-6 max-w-screen-2xl'}>
       {/* Load Google Maps API for address autocomplete */}
       <GoogleMapsLoader />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className={`flex items-center justify-between ${viewMode === 'map' ? 'px-4 py-3 flex-shrink-0 bg-background border-b' : ''}`}>
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dispatch Center</h1>
           <p className="text-muted-foreground mt-2">
@@ -2006,6 +2017,33 @@ export default function DispatchPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          {/* View Mode Toggle */}
+          <div className={`flex items-center rounded-lg border p-0.5 ${viewMode === 'map' ? 'bg-white/10 border-white/20' : 'bg-muted'}`}>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                viewMode === 'list'
+                  ? 'bg-white shadow-sm text-gray-900'
+                  : viewMode === 'map'
+                  ? 'text-white/70 hover:text-white'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <List className="h-4 w-4" />
+              List
+            </button>
+            <button
+              onClick={() => setViewMode('map')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                viewMode === 'map'
+                  ? 'bg-white shadow-sm text-gray-900'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <MapIcon className="h-4 w-4" />
+              Map
+            </button>
+          </div>
           <Button variant="outline" size="sm" onClick={fetchData}>
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -2034,7 +2072,7 @@ export default function DispatchPage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-5">
+      <div className={`grid gap-4 md:grid-cols-5 ${viewMode === 'map' ? 'hidden' : ''}`}>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total</CardTitle>
@@ -2093,7 +2131,7 @@ export default function DispatchPage() {
 
       {/* Actions Bar */}
       {selectedDeliveries.length > 0 && (
-        <Card className="border-primary">
+        <Card className={`border-primary ${viewMode === 'map' ? 'mx-4 flex-shrink-0' : ''}`}>
           <CardContent className="flex items-center justify-between p-4">
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center h-10 w-10 rounded-full bg-primary/10 text-primary font-semibold">
@@ -2125,10 +2163,22 @@ export default function DispatchPage() {
         </Card>
       )}
 
-      {/* Main Content */}
+      {/* Map View — full-bleed, rendered outside the card */}
+      {viewMode === 'map' && (
+        <DispatchMapView
+          deliveries={filteredDeliveries}
+          drivers={drivers}
+          selectedDeliveries={selectedDeliveries}
+          onSelectDelivery={handleSelectDelivery}
+          onViewDetails={handleViewDetails}
+          onAssign={handleAssign}
+        />
+      )}
+
+      {/* Main Content — List View */}
+      {viewMode === 'list' && (
       <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
+        <CardHeader>          <div className="flex items-center justify-between">
             <div>
               <CardTitle>Deliveries</CardTitle>
               <CardDescription>
@@ -2468,6 +2518,7 @@ export default function DispatchPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Assignment Modal */}
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
@@ -3154,6 +3205,76 @@ export default function DispatchPage() {
                     )}
                   </div>
                 </>
+              )}
+
+              {/* Proof of Delivery */}
+              {(selectedDeliveryForView.status === 'delivered') && (
+                (selectedDeliveryForView.pickup_proof_photo_url || selectedDeliveryForView.proof_photo_url || selectedDeliveryForView.signature_data) ? (
+                  <>
+                    <Separator />
+                    <div className="space-y-3">
+                      <h3 className="font-semibold flex items-center gap-2">
+                        <Camera className="h-4 w-4" />
+                        Proof of Delivery
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        {selectedDeliveryForView.pickup_proof_photo_url && !selectedDeliveryForView.pickup_proof_photo_url.includes('placeholder') && (
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">Pickup Photo</Label>
+                            <a href={selectedDeliveryForView.pickup_proof_photo_url} target="_blank" rel="noopener noreferrer" className="block">
+                              <img
+                                src={selectedDeliveryForView.pickup_proof_photo_url}
+                                alt="Pickup proof"
+                                className="w-full h-36 object-cover rounded-lg border hover:opacity-90 transition-opacity cursor-pointer"
+                                onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none'; }}
+                              />
+                            </a>
+                          </div>
+                        )}
+                        {selectedDeliveryForView.proof_photo_url && !selectedDeliveryForView.proof_photo_url.includes('placeholder') && (
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">Delivery Photo</Label>
+                            <a href={selectedDeliveryForView.proof_photo_url} target="_blank" rel="noopener noreferrer" className="block">
+                              <img
+                                src={selectedDeliveryForView.proof_photo_url}
+                                alt="Delivery proof"
+                                className="w-full h-36 object-cover rounded-lg border hover:opacity-90 transition-opacity cursor-pointer"
+                                onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none'; }}
+                              />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                      {selectedDeliveryForView.signature_data && (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Recipient Signature</Label>
+                          <div className="bg-white dark:bg-muted/30 rounded-lg border p-3">
+                            <img
+                              src={selectedDeliveryForView.signature_data}
+                              alt="Recipient signature"
+                              className="w-full h-24 object-contain"
+                              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Separator />
+                    <div className="space-y-2">
+                      <h3 className="font-semibold flex items-center gap-2">
+                        <Camera className="h-4 w-4" />
+                        Proof of Delivery
+                      </h3>
+                      <div className="p-4 bg-muted/30 rounded-lg text-center">
+                        <ImageIcon className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+                        <p className="text-sm text-muted-foreground">No proof photos submitted by driver</p>
+                      </div>
+                    </div>
+                  </>
+                )
               )}
 
               {(selectedDeliveryForView.payment_status || selectedDeliveryForView.total_amount) && (

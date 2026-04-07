@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useUserContext } from '@/lib/supabase/user-context';
 import { createClient } from '@/lib/supabase/client';
-import { uploadBusinessLogo } from '@/lib/supabase/storage';
+import { uploadBusinessLogo, uploadBusinessFavicon } from '@/lib/supabase/storage';
 import { LogoCropModal } from '@/components/logo-crop-modal';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,9 @@ import {
   Send,
   Phone,
   FlaskConical,
+  Globe,
+  Type,
+  CreditCard,
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -88,6 +91,26 @@ export default function SettingsPage() {
   const [emailNotifyPickup, setEmailNotifyPickup] = useState(false);
   const [emailSubject, setEmailSubject] = useState('');
 
+  // Enhanced customization fields
+  const [faviconUrl, setFaviconUrl] = useState('');
+  const [faviconUploading, setFaviconUploading] = useState(false);
+  const faviconFileInputRef = useRef<HTMLInputElement>(null);
+  const [logoBgTransparent, setLogoBgTransparent] = useState(false);
+  const [headerTextColor, setHeaderTextColor] = useState('');
+  const [bodyTextColor, setBodyTextColor] = useState('');
+  const [cardBgColor, setCardBgColor] = useState('');
+
+  // Storefront settings
+  const [storefrontEnabled, setStorefrontEnabled] = useState(false);
+  const [storefrontSlug, setStorefrontSlug] = useState('');
+  const [storefrontHeroText, setStorefrontHeroText] = useState('');
+  const [storefrontDescription, setStorefrontDescription] = useState('');
+  const [storefrontMaxStops, setStorefrontMaxStops] = useState(5);
+  const [storefrontShowPrice, setStorefrontShowPrice] = useState(true);
+  const [storefrontSaving, setStorefrontSaving] = useState(false);
+  const [slugAvailable, setSlugAvailable] = useState<boolean | null>(null);
+  const [checkingSlug, setCheckingSlug] = useState(false);
+
   const handleLogoFileChange = async (file: File) => {
     if (!businessId) return;
     if (!file.type.startsWith('image/')) {
@@ -118,6 +141,30 @@ export default function SettingsPage() {
     }
   };
 
+  const handleFaviconUpload = async (file: File) => {
+    if (!businessId) return;
+    const validTypes = ['image/png', 'image/x-icon', 'image/vnd.microsoft.icon', 'image/svg+xml', 'image/jpeg'];
+    if (!validTypes.includes(file.type)) {
+      toast({ title: 'Invalid file', description: 'Please upload a PNG, ICO, SVG or JPG file', variant: 'destructive' });
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      toast({ title: 'File too large', description: 'Favicon must be under 1MB', variant: 'destructive' });
+      return;
+    }
+    try {
+      setFaviconUploading(true);
+      const result = await uploadBusinessFavicon(file, businessId);
+      if (!result.success || !result.publicUrl) throw new Error(result.error);
+      setFaviconUrl(result.publicUrl);
+      toast({ title: 'Favicon uploaded ✓', description: 'Your favicon has been uploaded' });
+    } catch (err: any) {
+      toast({ title: 'Upload failed', description: err.message || 'Could not upload favicon', variant: 'destructive' });
+    } finally {
+      setFaviconUploading(false);
+    }
+  };
+
   useEffect(() => {
     if (!businessId) return;
 
@@ -126,7 +173,7 @@ export default function SettingsPage() {
         setLoading(true);
         const { data, error } = await supabase
           .from('business_accounts')
-          .select('business_name, business_phone, settings')
+          .select('business_name, business_phone, settings, slug, storefront_enabled, storefront_settings')
           .eq('id', businessId)
           .single();
 
@@ -162,6 +209,20 @@ export default function SettingsPage() {
           setEmailOnBooking(settings.email_on_booking !== false);
           setEmailNotifyPickup(settings.email_notify_pickup === true);
           setEmailSubject(settings.email_subject || '');
+          setFaviconUrl(settings.favicon_url || '');
+          setLogoBgTransparent(settings.logo_bg_transparent === true);
+          setHeaderTextColor(settings.header_text_color || '');
+          setBodyTextColor(settings.body_text_color || '');
+          setCardBgColor(settings.card_bg_color || '');
+
+          // Storefront settings
+          setStorefrontEnabled(data.storefront_enabled === true);
+          setStorefrontSlug(data.slug || '');
+          const sf = data.storefront_settings || {};
+          setStorefrontHeroText(sf.hero_text || '');
+          setStorefrontDescription(sf.description || '');
+          setStorefrontMaxStops(sf.max_stops || 5);
+          setStorefrontShowPrice(sf.show_price_estimate !== false);
         }
       } catch (error: any) {
         console.error('Error fetching settings:', error);
@@ -235,6 +296,67 @@ export default function SettingsPage() {
     }
   };
 
+  // Slug availability check
+  const checkSlugAvailability = async (slug: string) => {
+    if (!slug || slug.length < 3) {
+      setSlugAvailable(null);
+      return;
+    }
+    setCheckingSlug(true);
+    try {
+      const { data, error } = await supabase
+        .from('business_accounts')
+        .select('id')
+        .eq('slug', slug)
+        .neq('id', businessId || '')
+        .maybeSingle();
+
+      setSlugAvailable(!data);
+    } catch {
+      setSlugAvailable(null);
+    }
+    setCheckingSlug(false);
+  };
+
+  const handleStorefrontSave = async () => {
+    if (!businessId) return;
+    
+    // Validate slug
+    const cleanSlug = storefrontSlug.toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/--+/g, '-');
+    if (storefrontEnabled && cleanSlug.length < 3) {
+      toast({ title: 'Invalid slug', description: 'URL slug must be at least 3 characters', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      setStorefrontSaving(true);
+      const { error } = await supabase
+        .from('business_accounts')
+        .update({
+          slug: cleanSlug || null,
+          storefront_enabled: storefrontEnabled,
+          storefront_settings: {
+            hero_text: storefrontHeroText || null,
+            description: storefrontDescription || null,
+            max_stops: storefrontMaxStops,
+            show_price_estimate: storefrontShowPrice,
+          },
+        })
+        .eq('id', businessId);
+
+      if (error) throw error;
+      setStorefrontSlug(cleanSlug);
+      toast({ title: 'Storefront saved! ✓', description: storefrontEnabled ? `Your storefront is live at ${cleanSlug}.swiftdashdms.com` : 'Storefront settings saved (disabled)' });
+    } catch (err: any) {
+      const msg = err.message?.includes('duplicate') || err.message?.includes('unique')
+        ? 'This URL slug is already taken. Please choose another.'
+        : err.message || 'Failed to save storefront settings';
+      toast({ title: 'Error', description: msg, variant: 'destructive' });
+    } finally {
+      setStorefrontSaving(false);
+    }
+  };
+
   const handleSave = async () => {
     console.log('handleSave called, businessId:', businessId, 'user:', user?.id);
     if (!businessId) {
@@ -252,6 +374,11 @@ export default function SettingsPage() {
         logo_size: logoSize,
         header_bg_color: headerBgColor || null,
         page_bg_color: pageBgColor || null,
+        favicon_url: faviconUrl || null,
+        logo_bg_transparent: logoBgTransparent,
+        header_text_color: headerTextColor || null,
+        body_text_color: bodyTextColor || null,
+        card_bg_color: cardBgColor || null,
         tagline: tagline || null,
         custom_message: customMessage || null,
         footer_message: footerMessage || null,
@@ -500,6 +627,71 @@ export default function SettingsPage() {
               </div>
             )}
 
+            {/* Transparent Logo Background */}
+            {logoUrl && (
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Transparent Logo Background</Label>
+                  <p className="text-xs text-muted-foreground">Remove the white background behind your logo (use with transparent PNGs)</p>
+                </div>
+                <Switch checked={logoBgTransparent} onCheckedChange={setLogoBgTransparent} />
+              </div>
+            )}
+
+            <Separator />
+
+            {/* Favicon Upload */}
+            <div className="space-y-3">
+              <Label className="flex items-center gap-2">
+                <Globe className="h-4 w-4" />
+                Favicon (Browser Tab Icon)
+              </Label>
+              <div className="flex items-center gap-4">
+                {faviconUrl ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg border bg-muted flex items-center justify-center overflow-hidden">
+                      <img src={faviconUrl} alt="favicon" className="w-6 h-6 object-contain" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">Favicon uploaded</p>
+                      <p className="text-xs text-muted-foreground">Shown in browser tabs for your tracking links</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFaviconUrl('')}
+                      className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    className="flex-1 flex items-center gap-3 p-3 rounded-lg border-2 border-dashed hover:border-primary/50 cursor-pointer transition-colors"
+                    onClick={() => faviconFileInputRef.current?.click()}
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
+                      {faviconUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4 text-muted-foreground" />}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">Upload favicon</p>
+                      <p className="text-xs text-muted-foreground">PNG, ICO or SVG · Max 1MB · Recommended 32×32 or 64×64px</p>
+                    </div>
+                  </div>
+                )}
+                <input
+                  ref={faviconFileInputRef}
+                  type="file"
+                  accept=".png,.ico,.svg,.jpg"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleFaviconUpload(f);
+                    e.target.value = '';
+                  }}
+                />
+              </div>
+            </div>
+
             <Separator />
             <div className="space-y-2">
               <Label htmlFor="tagline">Tagline</Label>
@@ -620,6 +812,70 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              <Label className="flex items-center gap-2 pt-2">
+                <Type className="h-4 w-4" />
+                Text &amp; Card Colors
+              </Label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Header Text <span className="text-muted-foreground font-normal">(optional)</span></p>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="color"
+                      value={headerTextColor || '#ffffff'}
+                      onChange={(e) => setHeaderTextColor(e.target.value)}
+                      className="w-14 h-10 cursor-pointer p-1"
+                    />
+                    <Input
+                      value={headerTextColor}
+                      onChange={(e) => setHeaderTextColor(e.target.value)}
+                      placeholder="Auto-detect"
+                      className="flex-1 font-mono text-sm"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Leave blank to auto-detect from header background</p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Body Text <span className="text-muted-foreground font-normal">(optional)</span></p>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="color"
+                      value={bodyTextColor || '#1f2937'}
+                      onChange={(e) => setBodyTextColor(e.target.value)}
+                      className="w-14 h-10 cursor-pointer p-1"
+                    />
+                    <Input
+                      value={bodyTextColor}
+                      onChange={(e) => setBodyTextColor(e.target.value)}
+                      placeholder="Default dark"
+                      className="flex-1 font-mono text-sm"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Main text color for headings and body content</p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Card Background <span className="text-muted-foreground font-normal">(optional)</span></p>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="color"
+                      value={cardBgColor || '#ffffff'}
+                      onChange={(e) => setCardBgColor(e.target.value)}
+                      className="w-14 h-10 cursor-pointer p-1"
+                    />
+                    <Input
+                      value={cardBgColor}
+                      onChange={(e) => setCardBgColor(e.target.value)}
+                      placeholder="White"
+                      className="flex-1 font-mono text-sm"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Background color of content cards on the tracking page</p>
+                </div>
+              </div>
+
               {/* Live header preview */}
               {(() => {
                 const previewBg = headerBgColor || primaryColor;
@@ -628,8 +884,10 @@ export default function SettingsPage() {
                 const g = parseInt(hex.slice(2, 4), 16);
                 const b = parseInt(hex.slice(4, 6), 16);
                 const isDark = (r * 299 + g * 587 + b * 114) / 1000 < 128;
-                const textColor = isDark ? 'white' : '#1f2937';
-                const subColor = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(31,41,55,0.6)';
+                const textColor = headerTextColor || (isDark ? 'white' : '#1f2937');
+                const subColor = headerTextColor
+                  ? `${headerTextColor}b3`
+                  : isDark ? 'rgba(255,255,255,0.7)' : 'rgba(31,41,55,0.6)';
                 return (
                   <div className="rounded-xl overflow-hidden border shadow-sm">
                     <div
@@ -638,7 +896,7 @@ export default function SettingsPage() {
                     >
                       <div className="flex items-center gap-3">
                         {logoUrl ? (
-                          <div className="bg-white rounded-lg p-1 shadow-sm flex-shrink-0">
+                          <div className={`flex-shrink-0 ${logoBgTransparent ? '' : 'bg-white rounded-lg p-1 shadow-sm'}`}>
                             <img
                               src={logoUrl}
                               alt="logo"
@@ -980,6 +1238,143 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground">Sends a sample booking confirmation email to verify your Resend integration is working</p>
             </div>
 
+          </CardContent>
+        </Card>
+
+        {/* Storefront Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Globe className="h-5 w-5 text-blue-500" />
+              Customer Storefront
+            </CardTitle>
+            <CardDescription>
+              Let your customers book deliveries directly from your branded page
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {/* Enable toggle */}
+            <div className="flex items-center justify-between p-4 rounded-lg bg-muted/50 border">
+              <div>
+                <p className="font-medium text-sm">Enable Storefront</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Make your booking page publicly accessible
+                </p>
+              </div>
+              <Switch checked={storefrontEnabled} onCheckedChange={setStorefrontEnabled} />
+            </div>
+
+            {/* URL Slug */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Storefront URL</Label>
+              <div className="flex items-center gap-0">
+                <span className="inline-flex items-center px-3 h-9 rounded-l-md border border-r-0 bg-muted text-sm text-muted-foreground">
+                  https://
+                </span>
+                <Input
+                  value={storefrontSlug}
+                  onChange={(e) => {
+                    const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                    setStorefrontSlug(v);
+                    setSlugAvailable(null);
+                  }}
+                  onBlur={() => checkSlugAvailability(storefrontSlug)}
+                  placeholder="your-business"
+                  className="rounded-none border-r-0 flex-1"
+                />
+                <span className="inline-flex items-center px-3 h-9 rounded-r-md border bg-muted text-sm text-muted-foreground whitespace-nowrap">
+                  .swiftdashdms.com
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {checkingSlug && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                {slugAvailable === true && (
+                  <span className="text-green-600 flex items-center gap-1">
+                    <CheckCircle2 className="h-3 w-3" />
+                    Available!
+                  </span>
+                )}
+                {slugAvailable === false && (
+                  <span className="text-red-500">This slug is already taken</span>
+                )}
+                {!checkingSlug && slugAvailable === null && storefrontSlug.length > 0 && storefrontSlug.length < 3 && (
+                  <span className="text-muted-foreground">Minimum 3 characters</span>
+                )}
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Storefront content */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Hero Title</Label>
+              <Input
+                value={storefrontHeroText}
+                onChange={(e) => setStorefrontHeroText(e.target.value)}
+                placeholder="Book a Delivery"
+              />
+              <p className="text-xs text-muted-foreground">The headline shown on your storefront page</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Description</Label>
+              <Textarea
+                value={storefrontDescription}
+                onChange={(e) => setStorefrontDescription(e.target.value)}
+                placeholder="Fast, reliable delivery powered by SwiftDash."
+                rows={2}
+              />
+            </div>
+
+            <Separator />
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Max Stops per Order</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={storefrontMaxStops}
+                  onChange={(e) => setStorefrontMaxStops(parseInt(e.target.value) || 5)}
+                />
+              </div>
+              <div className="flex items-center justify-between pt-6">
+                <Label className="text-sm">Show Price Estimate</Label>
+                <Switch checked={storefrontShowPrice} onCheckedChange={setStorefrontShowPrice} />
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Save storefront */}
+            <div className="flex items-center justify-between">
+              {storefrontEnabled && storefrontSlug.length >= 3 && (
+                <a
+                  href={`https://${storefrontSlug}.swiftdashdms.com`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open Storefront
+                </a>
+              )}
+              <div className="flex-1" />
+              <Button onClick={handleStorefrontSave} disabled={storefrontSaving} size="sm">
+                {storefrontSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="h-4 w-4 mr-1.5" />
+                    Save Storefront
+                  </>
+                )}
+              </Button>
+            </div>
           </CardContent>
         </Card>
 

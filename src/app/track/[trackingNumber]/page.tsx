@@ -32,6 +32,8 @@ import {
   HeadphonesIcon,
   Mail,
   MessageSquare,
+  Camera,
+  ImageIcon,
 } from 'lucide-react';
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
@@ -74,6 +76,9 @@ interface DeliveryData {
   estimated_duration: number | null;
   distance_km: number | null;
   customer_rating: number | null;
+  pickup_proof_photo_url?: string | null;
+  proof_photo_url?: string | null;
+  signature_data?: string | null;
   is_multi_stop?: boolean;
   stops?: DeliveryStop[];
   stop_info?: {
@@ -95,6 +100,11 @@ interface DeliveryData {
     accent_color?: string;
     header_bg_color?: string;
     page_bg_color?: string;
+    favicon_url?: string;
+    logo_bg_transparent?: boolean;
+    header_text_color?: string;
+    body_text_color?: string;
+    card_bg_color?: string;
     support_phone?: string;
     support_email?: string;
     whatsapp_number?: string;
@@ -159,6 +169,29 @@ export default function TrackingPage() {
     }
     return () => { document.title = 'SwiftDash Deliveries'; };
   }, [delivery?.business_branding?.business_name, trackingNumber]);
+
+  // Dynamic favicon based on business branding
+  useEffect(() => {
+    const faviconUrl = delivery?.business_branding?.favicon_url;
+    if (!faviconUrl) return;
+    
+    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    const originalHref = link?.href;
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = faviconUrl;
+    
+    return () => {
+      if (link && originalHref) {
+        link.href = originalHref;
+      } else if (link && !originalHref) {
+        link.remove();
+      }
+    };
+  }, [delivery?.business_branding?.favicon_url]);
 
   const handleShare = async () => {
     const url = window.location.href;
@@ -230,6 +263,11 @@ export default function TrackingPage() {
                 accent_color: bizData.settings?.accent_color,
                 header_bg_color: bizData.settings?.header_bg_color,
                 page_bg_color: bizData.settings?.page_bg_color,
+                favicon_url: bizData.settings?.favicon_url,
+                logo_bg_transparent: bizData.settings?.logo_bg_transparent,
+                header_text_color: bizData.settings?.header_text_color,
+                body_text_color: bizData.settings?.body_text_color,
+                card_bg_color: bizData.settings?.card_bg_color,
                 support_phone: bizData.business_phone,
                 support_email: bizData.settings?.support_email,
                 whatsapp_number: bizData.settings?.whatsapp_number,
@@ -305,6 +343,9 @@ export default function TrackingPage() {
             estimated_duration,
             distance_km,
             customer_rating,
+            pickup_proof_photo_url,
+            proof_photo_url,
+            signature_data,
             driver_id,
             business_id,
             is_multi_stop
@@ -410,6 +451,11 @@ export default function TrackingPage() {
             accent_color: businessData.settings?.accent_color,
             header_bg_color: businessData.settings?.header_bg_color,
             page_bg_color: businessData.settings?.page_bg_color,
+            favicon_url: businessData.settings?.favicon_url,
+            logo_bg_transparent: businessData.settings?.logo_bg_transparent,
+            header_text_color: businessData.settings?.header_text_color,
+            body_text_color: businessData.settings?.body_text_color,
+            card_bg_color: businessData.settings?.card_bg_color,
             support_phone: businessData.business_phone,
             support_email: businessData.settings?.support_email,
             whatsapp_number: businessData.settings?.whatsapp_number,
@@ -1020,6 +1066,57 @@ export default function TrackingPage() {
                 </div>
               )}
 
+              {/* Proof of Delivery Photos */}
+              {isDelivered && (delivery.proof_photo_url || delivery.pickup_proof_photo_url || delivery.signature_data) && (
+                <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-xs text-gray-400 uppercase tracking-wide font-medium mb-3 flex items-center gap-1.5">
+                    <Camera className="h-3.5 w-3.5" />
+                    Proof of Delivery
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {delivery.pickup_proof_photo_url && !delivery.pickup_proof_photo_url.includes('placeholder') && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Pickup Photo</p>
+                        <a href={delivery.pickup_proof_photo_url} target="_blank" rel="noopener noreferrer" className="block">
+                          <img
+                            src={delivery.pickup_proof_photo_url}
+                            alt="Pickup proof"
+                            className="w-full h-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700 hover:opacity-90 transition-opacity cursor-pointer"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        </a>
+                      </div>
+                    )}
+                    {delivery.proof_photo_url && !delivery.proof_photo_url.includes('placeholder') && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Delivery Photo</p>
+                        <a href={delivery.proof_photo_url} target="_blank" rel="noopener noreferrer" className="block">
+                          <img
+                            src={delivery.proof_photo_url}
+                            alt="Delivery proof"
+                            className="w-full h-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700 hover:opacity-90 transition-opacity cursor-pointer"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                  {delivery.signature_data && (
+                    <div className="mt-3 space-y-1.5">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Recipient Signature</p>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
+                        <img
+                          src={delivery.signature_data}
+                          alt="Recipient signature"
+                          className="w-full h-20 object-contain"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Support section */}
               {(delivery.business_branding?.support_email || delivery.business_branding?.support_phone) && (
                 <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
@@ -1063,6 +1160,8 @@ export default function TrackingPage() {
   const accentColor = delivery.business_branding?.accent_color || primaryColor;
   const headerBg = delivery.business_branding?.header_bg_color || primaryColor;
   const pageBg = delivery.business_branding?.page_bg_color || undefined;
+  const bodyTextColor = delivery.business_branding?.body_text_color || undefined;
+  const cardBgColor = delivery.business_branding?.card_bg_color || undefined;
 
   // Determine if header is dark enough to need white text
   const isHeaderDark = (hex: string) => {
@@ -1072,8 +1171,10 @@ export default function TrackingPage() {
     const b = parseInt(c.slice(4,6),16);
     return (r * 299 + g * 587 + b * 114) / 1000 < 128;
   };
-  const headerTextColor = isHeaderDark(headerBg) ? 'white' : '#1f2937';
-  const headerSubColor = isHeaderDark(headerBg) ? 'rgba(255,255,255,0.7)' : 'rgba(31,41,55,0.6)';
+  const headerTextColor = delivery.business_branding?.header_text_color || (isHeaderDark(headerBg) ? 'white' : '#1f2937');
+  const headerSubColor = delivery.business_branding?.header_text_color
+    ? `${delivery.business_branding.header_text_color}b3`
+    : isHeaderDark(headerBg) ? 'rgba(255,255,255,0.7)' : 'rgba(31,41,55,0.6)';
 
   return (
     <div className="min-h-screen" style={pageBg ? { backgroundColor: pageBg } : { backgroundColor: '#f9fafb' }}>
@@ -1083,7 +1184,7 @@ export default function TrackingPage() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               {delivery.business_branding?.logo_url ? (
-                <div className="flex-shrink-0 bg-white rounded-lg p-1 shadow-sm">
+                <div className={`flex-shrink-0 ${delivery.business_branding?.logo_bg_transparent ? '' : 'bg-white rounded-lg p-1 shadow-sm'}`}>
                   <img
                     src={delivery.business_branding.logo_url}
                     alt={delivery.business_branding.business_name}
@@ -1202,14 +1303,23 @@ export default function TrackingPage() {
         </div>
 
         {/* Info Panel - scrollable on mobile, fixed height sidebar on desktop */}
-        <div className="min-h-[55vh] lg:min-h-0 lg:h-full lg:w-1/3 overflow-y-auto bg-white dark:bg-gray-800 border-t lg:border-t-0 lg:border-l">
+        <div
+          className={`min-h-[55vh] lg:min-h-0 lg:h-full lg:w-1/3 overflow-y-auto border-t lg:border-t-0 lg:border-l ${!cardBgColor ? 'bg-white dark:bg-gray-800' : ''}`}
+          style={{
+            ...(cardBgColor ? { backgroundColor: cardBgColor } : {}),
+            ...(bodyTextColor ? { color: bodyTextColor } : {}),
+          }}
+        >
           {/* Mobile drag handle */}
           <div className="flex justify-center pt-2 pb-1 lg:hidden">
             <div className="w-10 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
           </div>
 
           {/* Mobile sticky status + ETA strip */}
-          <div className="sticky top-0 z-10 bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 px-4 py-2 flex items-center justify-between lg:hidden">
+          <div
+            className={`sticky top-0 z-10 border-b border-gray-100 dark:border-gray-700 px-4 py-2 flex items-center justify-between lg:hidden ${!cardBgColor ? 'bg-white dark:bg-gray-800' : ''}`}
+            style={cardBgColor ? { backgroundColor: cardBgColor } : undefined}
+          >
             <div className="flex items-center gap-2">
               {getStatusBadge(delivery.status)}
             </div>

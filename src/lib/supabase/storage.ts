@@ -164,6 +164,37 @@ export const uploadBusinessLogo = async (file: File, businessId: string) => {
   }
 };
 
+// Upload business favicon (same bucket as logos, stored under businessId/favicon_*)
+export const uploadBusinessFavicon = async (file: File, businessId: string) => {
+  try {
+    const supabase = getSupabaseClient();
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'png';
+    const fileName = `${businessId}/favicon_${Date.now()}.${fileExt}`;
+
+    const { data, error } = await supabase.storage
+      .from('business-logos')
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: file.type,
+      });
+
+    if (error) throw error;
+
+    const { data: urlData } = supabase.storage
+      .from('business-logos')
+      .getPublicUrl(fileName);
+
+    return { success: true, publicUrl: urlData.publicUrl };
+  } catch (error) {
+    console.error('Favicon upload error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Upload failed',
+    };
+  }
+};
+
 // Delete file from bucket
 export const deleteDriverDocument = async (bucket: string, filePath: string) => {
   try {

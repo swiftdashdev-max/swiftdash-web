@@ -1729,9 +1729,7 @@ export default function OrdersPage() {
                     const totalCod = currentRows.reduce((s, r) => s + (parseFloat(r.cod_amount) || 0), 0);
 
                     // Step 3: Create manifest record
-                    const { data: manifest, error: manifestError } = await supabase
-                      .from('delivery_manifests')
-                      .insert({
+                    const manifestPayload = {
                         business_id: businessId,
                         name: manifestName || `Manifest - ${new Date().toLocaleDateString('en-PH')}`,
                         total_items: currentRows.length,
@@ -1740,13 +1738,29 @@ export default function OrdersPage() {
                         total_cod: totalCod || null,
                         notes: manifestNotes || null,
                         status: 'booking',
-                      })
+                    };
+                    console.log('[Manifest] Inserting manifest with payload:', JSON.stringify(manifestPayload, null, 2));
+                    console.log('[Manifest] businessId:', businessId, 'type:', typeof businessId);
+
+                    const { data: manifest, error: manifestError } = await supabase
+                      .from('delivery_manifests')
+                      .insert(manifestPayload)
                       .select('id')
                       .single();
 
+                    console.log('[Manifest] Insert result - data:', manifest, 'error:', manifestError);
+                    if (manifestError) {
+                      console.error('[Manifest] Insert error details:', {
+                        message: manifestError.message,
+                        details: manifestError.details,
+                        hint: manifestError.hint,
+                        code: manifestError.code,
+                      });
+                    }
+
                     if (manifestError || !manifest) {
                       setShowManifestProgress(false);
-                      alert('Failed to create manifest record. Please try again.');
+                      alert(`Failed to create manifest record: ${manifestError?.message || 'No data returned'}`);
                       return;
                     }
 
@@ -1758,9 +1772,7 @@ export default function OrdersPage() {
                     for (let i = 0; i < currentRows.length; i++) {
                       const row = currentRows[i];
                       try {
-                        const { error: insertError } = await supabase
-                          .from('manifest_items')
-                          .insert({
+                        const itemPayload = {
                             manifest_id: manifest.id,
                             sort_order: i,
                             reference_number: row.reference_number || null,
@@ -1780,8 +1792,20 @@ export default function OrdersPage() {
                             recipient_lng: row.lng ?? null,
                             delivery_notes: row.delivery_notes || null,
                             status: 'pending',
+                          };
+                      if (i === 0) console.log('[Manifest] First item payload:', JSON.stringify(itemPayload, null, 2));
+                      const { error: insertError } = await supabase
+                          .from('manifest_items')
+                          .insert(itemPayload);
+                        if (insertError) {
+                          console.error(`[Manifest] Item ${i} insert error:`, {
+                            message: insertError.message,
+                            details: insertError.details,
+                            hint: insertError.hint,
+                            code: insertError.code,
                           });
-                        if (insertError) throw insertError;
+                          throw insertError;
+                        }
                         saved++;
                       } catch {
                         failed++;
@@ -1790,15 +1814,21 @@ export default function OrdersPage() {
                     }
 
                     // Step 5: Update manifest status
-                    await supabase
+                    const finalStatus = failed === 0 ? 'completed' : failed === currentRows.length ? 'draft' : 'partial';
+                    console.log(`[Manifest] Final update - saved: ${saved}, failed: ${failed}, status: ${finalStatus}`);
+                    const { error: updateError } = await supabase
                       .from('delivery_manifests')
                       .update({
                         booked_count: saved,
                         failed_count: failed,
-                        status: failed === 0 ? 'completed' : failed === currentRows.length ? 'draft' : 'partial',
+                        status: finalStatus,
                       })
                       .eq('id', manifest.id);
+                    if (updateError) {
+                      console.error('[Manifest] Status update error:', updateError);
+                    }
 
+                    console.log('[Manifest] Complete! Manifest ID:', manifest.id);
                     setManifestComplete(true);
                   }}
                 >

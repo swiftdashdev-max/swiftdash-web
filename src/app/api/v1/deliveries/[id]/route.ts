@@ -82,6 +82,11 @@ export async function DELETE(req: NextRequest, ctx: RouteContext) {
       {
         error: `Cannot cancel a delivery with status "${current.status}"`,
         code: 'INVALID_STATUS_TRANSITION',
+        details: [{
+          field: 'status',
+          message: `Current status is "${current.status}". Only deliveries with status ${cancellable.map(s => `"${s}"`).join(' or ')} can be cancelled.`,
+          code: 'INVALID_VALUE',
+        }],
       },
       { status: 409 }
     );

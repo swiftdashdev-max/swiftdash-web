@@ -183,6 +183,61 @@ export class EdgeFunctions {
 
     return data;
   }
+
+  /**
+   * Book a delivery from a public storefront (no auth required)
+   */
+  async bookDeliveryStorefront(params: {
+    businessId: string;
+    vehicleTypeId: string;
+    pickup: {
+      address: string;
+      location: { lat: number; lng: number };
+      contactName: string;
+      contactPhone: string;
+      instructions?: string;
+    };
+    dropoff: {
+      address: string;
+      location: { lat: number; lng: number };
+      contactName: string;
+      contactPhone: string;
+      instructions?: string;
+    };
+    additionalStops?: Array<{
+      address: string;
+      location: { lat: number; lng: number };
+      contactName: string;
+      contactPhone: string;
+      instructions?: string;
+    }>;
+    package?: {
+      description?: string;
+      weightKg?: number;
+      value?: number;
+    };
+    payment?: {
+      paymentBy?: 'sender' | 'recipient';
+      paymentMethod?: 'cash' | 'maya';
+    };
+    customer: {
+      name: string;
+      phone: string;
+      email?: string;
+    };
+    isScheduled?: boolean;
+    scheduledPickupTime?: string;
+  }) {
+    const { data, error } = await this.supabase.functions.invoke('book_delivery_storefront', {
+      body: params
+    });
+
+    if (error) {
+      throw new Error(error.message || 'Failed to create delivery');
+    }
+
+    return data;
+  }
 }
 
 // Export singleton instance
@@ -191,6 +246,7 @@ export const edgeFunctions = new EdgeFunctions();
 // Export individual functions for convenience with proper binding
 export const getQuote = edgeFunctions.getQuote.bind(edgeFunctions);
 export const bookDelivery = edgeFunctions.bookDelivery.bind(edgeFunctions);
+export const bookDeliveryStorefront = edgeFunctions.bookDeliveryStorefront.bind(edgeFunctions);
 export const createMultiStopDelivery = edgeFunctions.createMultiStopDelivery.bind(edgeFunctions);
 export const sendTrackingSms = edgeFunctions.sendTrackingSms.bind(edgeFunctions);
 export const sendTrackingEmail = edgeFunctions.sendTrackingEmail.bind(edgeFunctions);
