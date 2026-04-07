@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import Image from 'next/image';
 import { 
   Settings as SettingsIcon, 
   Palette, 
@@ -28,7 +29,7 @@ import {
   ExternalLink,
   X,
   ImagePlus,
-  Map,
+  Map as MapIcon,
   Mail,
   MessageSquare,
   Truck,
@@ -41,7 +42,36 @@ import {
   Globe,
   Type,
   CreditCard,
+  Plus,
+  Trash2,
+  GripVertical,
+  DollarSign,
 } from 'lucide-react';
+
+interface VehicleTypeRow {
+  id: string;
+  name: string;
+  base_price: number;
+  price_per_km: number;
+  additional_stop_charge: number;
+  max_weight_kg: number | null;
+  is_active: boolean;
+}
+
+interface FleetVehicle {
+  id?: string; // uuid from business_vehicle_pricing
+  vehicle_type_id: string;
+  vehicle_name: string; // from vehicle_types.name
+  is_enabled: boolean;
+  display_name: string;
+  image_url: string;
+  base_price: number;
+  price_per_km: number;
+  additional_stop_charge: number;
+  max_weight_kg: number | null;
+  description: string;
+  sort_order: number;
+}
 
 export default function SettingsPage() {
   const { user, businessId, loading: userLoading } = useUserContext();
@@ -110,6 +140,19 @@ export default function SettingsPage() {
   const [storefrontSaving, setStorefrontSaving] = useState(false);
   const [slugAvailable, setSlugAvailable] = useState<boolean | null>(null);
   const [checkingSlug, setCheckingSlug] = useState(false);
+  // Extended storefront settings
+  const [storefrontAccentColor, setStorefrontAccentColor] = useState('');
+  const [storefrontTaglineBadges, setStorefrontTaglineBadges] = useState('Fast Delivery, Real-time Tracking, Insured');
+  const [storefrontOperatingHours, setStorefrontOperatingHours] = useState('');
+  const [storefrontBookingNote, setStorefrontBookingNote] = useState('');
+  const [storefrontBannerImageUrl, setStorefrontBannerImageUrl] = useState('');
+  const [storefrontPaymentMethods, setStorefrontPaymentMethods] = useState<string[]>(['cash', 'maya']);
+
+  // Fleet vehicles & pricing
+  const [allVehicleTypes, setAllVehicleTypes] = useState<VehicleTypeRow[]>([]);
+  const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
+  const [fleetSaving, setFleetSaving] = useState(false);
+  const [fleetImageUploading, setFleetImageUploading] = useState<string | null>(null);
 
   const handleLogoFileChange = async (file: File) => {
     if (!businessId) return;
@@ -223,6 +266,64 @@ export default function SettingsPage() {
           setStorefrontDescription(sf.description || '');
           setStorefrontMaxStops(sf.max_stops || 5);
           setStorefrontShowPrice(sf.show_price_estimate !== false);
+          setStorefrontAccentColor(sf.accent_color || '');
+          setStorefrontTaglineBadges(Array.isArray(sf.tagline_badges) ? sf.tagline_badges.join(', ') : 'Fast Delivery, Real-time Tracking, Insured');
+          setStorefrontOperatingHours(sf.operating_hours_text || '');
+          setStorefrontBookingNote(sf.booking_note || '');
+          setStorefrontBannerImageUrl(sf.banner_image_url || '');
+          setStorefrontPaymentMethods(Array.isArray(sf.payment_methods) ? sf.payment_methods : ['cash', 'maya']);
+
+          // Fetch fleet vehicles & pricing
+          const [vtRes, bvpRes] = await Promise.all([
+            supabase.from('vehicle_types').select('id, name, base_price, price_per_km, additional_stop_charge, max_weight_kg, is_active').eq('is_active', true).order('name'),
+            supabase.from('business_vehicle_pricing').select('*').eq('business_id', businessId),
+          ]);
+
+          const vts: VehicleTypeRow[] = vtRes.data || [];
+          const bvps = bvpRes.data || [];
+          setAllVehicleTypes(vts);
+
+          // Build fleet vehicles list: merge business pricing with vehicle types
+          const bvpMap = new Map(bvps.map((b: any) => [b.vehicle_type_id, b]));
+          const fleet: FleetVehicle[] = vts.map((vt) => {
+            const existing = bvpMap.get(vt.id);
+            if (existing) {
+              return {
+                id: existing.id,
+                vehicle_type_id: vt.id,
+                vehicle_name: vt.name,
+                is_enabled: existing.is_enabled ?? true,
+                display_name: existing.display_name || '',
+                image_url: existing.image_url || '',
+                base_price: Number(existing.base_price) || 0,
+                price_per_km: Number(existing.price_per_km) || 0,
+                additional_stop_charge: Number(existing.additional_stop_charge) || 0,
+                max_weight_kg: existing.max_weight_kg ?? vt.max_weight_kg,
+                description: existing.description || '',
+                sort_order: existing.sort_order ?? 0,
+              };
+            }
+            return {
+              vehicle_type_id: vt.id,
+              vehicle_name: vt.name,
+              is_enabled: false,
+              display_name: '',
+              image_url: '',
+              base_price: Number(vt.base_price) || 0,
+              price_per_km: Number(vt.price_per_km) || 0,
+              additional_stop_charge: Number(vt.additional_stop_charge) || 0,
+              max_weight_kg: vt.max_weight_kg,
+              description: '',
+              sort_order: 999,
+            };
+          });
+          // Sort: enabled first by sort_order, then disabled
+          fleet.sort((a, b) => {
+            if (a.is_enabled && !b.is_enabled) return -1;
+            if (!a.is_enabled && b.is_enabled) return 1;
+            return a.sort_order - b.sort_order;
+          });
+          setFleetVehicles(fleet);
         }
       } catch (error: any) {
         console.error('Error fetching settings:', error);
@@ -296,6 +397,108 @@ export default function SettingsPage() {
     }
   };
 
+  // Fleet vehicle image upload
+  const handleFleetImageUpload = async (vehicleTypeId: string, file: File) => {
+    if (!businessId) return;
+    if (!file.type.startsWith('image/')) {
+      toast({ title: 'Invalid file', description: 'Please upload an image file', variant: 'destructive' });
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast({ title: 'File too large', description: 'Image must be under 2MB', variant: 'destructive' });
+      return;
+    }
+    try {
+      setFleetImageUploading(vehicleTypeId);
+      const ext = file.name.split('.').pop() || 'png';
+      const path = `${businessId}/fleet/${vehicleTypeId}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from('business-logos')
+        .upload(path, file, { upsert: true, contentType: file.type });
+      if (uploadError) throw uploadError;
+      const { data: urlData } = supabase.storage.from('business-logos').getPublicUrl(path);
+      const publicUrl = urlData.publicUrl + '?t=' + Date.now();
+      setFleetVehicles(prev => prev.map(fv =>
+        fv.vehicle_type_id === vehicleTypeId ? { ...fv, image_url: publicUrl } : fv
+      ));
+      toast({ title: 'Image uploaded ✓' });
+    } catch (err: any) {
+      toast({ title: 'Upload failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setFleetImageUploading(null);
+    }
+  };
+
+  // Update fleet vehicle field
+  const updateFleetVehicle = (vehicleTypeId: string, field: keyof FleetVehicle, value: any) => {
+    setFleetVehicles(prev => prev.map(fv =>
+      fv.vehicle_type_id === vehicleTypeId ? { ...fv, [field]: value } : fv
+    ));
+  };
+
+  // Save fleet vehicles
+  const handleFleetSave = async () => {
+    if (!businessId) return;
+    try {
+      setFleetSaving(true);
+      const enabledVehicles = fleetVehicles.filter(fv => fv.is_enabled);
+      
+      // Upsert all enabled vehicles
+      for (let i = 0; i < enabledVehicles.length; i++) {
+        const fv = enabledVehicles[i];
+        const payload = {
+          business_id: businessId,
+          vehicle_type_id: fv.vehicle_type_id,
+          is_enabled: true,
+          display_name: fv.display_name || null,
+          image_url: fv.image_url || null,
+          base_price: fv.base_price,
+          price_per_km: fv.price_per_km,
+          additional_stop_charge: fv.additional_stop_charge,
+          max_weight_kg: fv.max_weight_kg,
+          description: fv.description || null,
+          sort_order: i,
+          updated_at: new Date().toISOString(),
+        };
+
+        if (fv.id) {
+          const { error } = await supabase
+            .from('business_vehicle_pricing')
+            .update(payload)
+            .eq('id', fv.id);
+          if (error) throw error;
+        } else {
+          const { data, error } = await supabase
+            .from('business_vehicle_pricing')
+            .insert(payload)
+            .select('id')
+            .single();
+          if (error) throw error;
+          if (data) {
+            setFleetVehicles(prev => prev.map(v =>
+              v.vehicle_type_id === fv.vehicle_type_id ? { ...v, id: data.id, sort_order: i } : v
+            ));
+          }
+        }
+      }
+
+      // Disable any previously enabled vehicles that are now disabled
+      const disabledVehicles = fleetVehicles.filter(fv => !fv.is_enabled && fv.id);
+      for (const fv of disabledVehicles) {
+        await supabase
+          .from('business_vehicle_pricing')
+          .update({ is_enabled: false, updated_at: new Date().toISOString() })
+          .eq('id', fv.id);
+      }
+
+      toast({ title: 'Fleet saved! ✓', description: `${enabledVehicles.length} vehicle(s) configured for your storefront` });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to save fleet vehicles', variant: 'destructive' });
+    } finally {
+      setFleetSaving(false);
+    }
+  };
+
   // Slug availability check
   const checkSlugAvailability = async (slug: string) => {
     if (!slug || slug.length < 3) {
@@ -340,6 +543,12 @@ export default function SettingsPage() {
             description: storefrontDescription || null,
             max_stops: storefrontMaxStops,
             show_price_estimate: storefrontShowPrice,
+            accent_color: storefrontAccentColor || null,
+            tagline_badges: storefrontTaglineBadges.split(',').map((s: string) => s.trim()).filter(Boolean),
+            operating_hours_text: storefrontOperatingHours || null,
+            booking_note: storefrontBookingNote || null,
+            banner_image_url: storefrontBannerImageUrl || null,
+            payment_methods: storefrontPaymentMethods,
           },
         })
         .eq('id', businessId);
@@ -986,7 +1195,7 @@ export default function SettingsPage() {
             {/* Map Style */}
             <div className="space-y-2">
               <Label className="flex items-center gap-2">
-                <Map className="h-4 w-4" />
+                <MapIcon className="h-4 w-4" />
                 Map Style
               </Label>
               <Select value={mapStyle} onValueChange={setMapStyle}>
@@ -1249,11 +1458,12 @@ export default function SettingsPage() {
               Customer Storefront
             </CardTitle>
             <CardDescription>
-              Let your customers book deliveries directly from your branded page
+              Let your customers book deliveries directly from your fully branded booking page
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-5">
-            {/* Enable toggle */}
+          <CardContent className="space-y-6">
+
+            {/* Enable + URL */}
             <div className="flex items-center justify-between p-4 rounded-lg bg-muted/50 border">
               <div>
                 <p className="font-medium text-sm">Enable Storefront</p>
@@ -1264,7 +1474,6 @@ export default function SettingsPage() {
               <Switch checked={storefrontEnabled} onCheckedChange={setStorefrontEnabled} />
             </div>
 
-            {/* URL Slug */}
             <div className="space-y-2">
               <Label className="text-sm font-medium">Storefront URL</Label>
               <div className="flex items-center gap-0">
@@ -1289,14 +1498,9 @@ export default function SettingsPage() {
               <div className="flex items-center gap-1.5 text-xs">
                 {checkingSlug && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                 {slugAvailable === true && (
-                  <span className="text-green-600 flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3" />
-                    Available!
-                  </span>
+                  <span className="text-green-600 flex items-center gap-1"><CheckCircle2 className="h-3 w-3" />Available!</span>
                 )}
-                {slugAvailable === false && (
-                  <span className="text-red-500">This slug is already taken</span>
-                )}
+                {slugAvailable === false && <span className="text-red-500">This slug is already taken</span>}
                 {!checkingSlug && slugAvailable === null && storefrontSlug.length > 0 && storefrontSlug.length < 3 && (
                   <span className="text-muted-foreground">Minimum 3 characters</span>
                 )}
@@ -1305,43 +1509,119 @@ export default function SettingsPage() {
 
             <Separator />
 
-            {/* Storefront content */}
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Hero Title</Label>
-              <Input
-                value={storefrontHeroText}
-                onChange={(e) => setStorefrontHeroText(e.target.value)}
-                placeholder="Book a Delivery"
-              />
-              <p className="text-xs text-muted-foreground">The headline shown on your storefront page</p>
-            </div>
+            {/* ── Content & Branding ── */}
+            <div>
+              <p className="text-sm font-semibold mb-4 flex items-center gap-1.5">
+                <span className="w-5 h-5 rounded-md bg-purple-100 text-purple-600 flex items-center justify-center text-xs">✦</span>
+                Content & Branding
+              </p>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Hero Title</Label>
+                  <Input value={storefrontHeroText} onChange={(e) => setStorefrontHeroText(e.target.value)} placeholder="Book a Delivery" />
+                  <p className="text-xs text-muted-foreground">The headline shown in the hero section</p>
+                </div>
 
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Description</Label>
-              <Textarea
-                value={storefrontDescription}
-                onChange={(e) => setStorefrontDescription(e.target.value)}
-                placeholder="Fast, reliable delivery powered by SwiftDash."
-                rows={2}
-              />
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Description</Label>
+                  <Textarea value={storefrontDescription} onChange={(e) => setStorefrontDescription(e.target.value)} placeholder="Fast, reliable delivery powered by SwiftDash." rows={2} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Trust Badges</Label>
+                  <Input
+                    value={storefrontTaglineBadges}
+                    onChange={(e) => setStorefrontTaglineBadges(e.target.value)}
+                    placeholder="Fast Delivery, Real-time Tracking, Insured"
+                  />
+                  <p className="text-xs text-muted-foreground">Comma-separated. Shown as pills in the hero. Up to 5 recommended.</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">Accent Color</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="color"
+                        value={storefrontAccentColor || '#3b82f6'}
+                        onChange={(e) => setStorefrontAccentColor(e.target.value)}
+                        className="h-9 w-14 p-1 cursor-pointer"
+                      />
+                      <Input
+                        value={storefrontAccentColor}
+                        onChange={(e) => setStorefrontAccentColor(e.target.value)}
+                        placeholder="#3b82f6"
+                        className="flex-1 font-mono text-sm"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Hero gradient secondary color (defaults to brand color)</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">Operating Hours</Label>
+                    <Input value={storefrontOperatingHours} onChange={(e) => setStorefrontOperatingHours(e.target.value)} placeholder="Mon–Sat 8AM–6PM" />
+                    <p className="text-xs text-muted-foreground">Displayed in the header (optional)</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Booking Note</Label>
+                  <Textarea value={storefrontBookingNote} onChange={(e) => setStorefrontBookingNote(e.target.value)} placeholder="e.g., Please ensure someone is present to receive the package." rows={2} />
+                  <p className="text-xs text-muted-foreground">Shown as an amber notice on the Review step before submission</p>
+                </div>
+              </div>
             </div>
 
             <Separator />
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">Max Stops per Order</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={storefrontMaxStops}
-                  onChange={(e) => setStorefrontMaxStops(parseInt(e.target.value) || 5)}
-                />
-              </div>
-              <div className="flex items-center justify-between pt-6">
-                <Label className="text-sm">Show Price Estimate</Label>
-                <Switch checked={storefrontShowPrice} onCheckedChange={setStorefrontShowPrice} />
+            {/* ── Booking Options ── */}
+            <div>
+              <p className="text-sm font-semibold mb-4 flex items-center gap-1.5">
+                <span className="w-5 h-5 rounded-md bg-blue-100 text-blue-600 flex items-center justify-center text-xs">⚙</span>
+                Booking Options
+              </p>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">Max Stops per Order</Label>
+                    <Input type="number" min={1} max={20} value={storefrontMaxStops} onChange={(e) => setStorefrontMaxStops(parseInt(e.target.value) || 5)} />
+                  </div>
+                  <div className="flex items-center justify-between pt-6">
+                    <Label className="text-sm">Show Price Estimate</Label>
+                    <Switch checked={storefrontShowPrice} onCheckedChange={setStorefrontShowPrice} />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Accepted Payment Methods</Label>
+                  <div className="flex gap-3 flex-wrap">
+                    {[
+                      { value: 'cash', label: '💵 Cash' },
+                      { value: 'maya', label: '📱 Maya' },
+                      { value: 'card', label: '💳 Card' },
+                      { value: 'gcash', label: '🟦 GCash' },
+                    ].map(({ value, label }) => {
+                      const isChecked = storefrontPaymentMethods.includes(value);
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => {
+                            setStorefrontPaymentMethods(
+                              isChecked
+                                ? storefrontPaymentMethods.filter(m => m !== value)
+                                : [...storefrontPaymentMethods, value]
+                            );
+                          }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border-2 font-medium transition-all ${isChecked ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-border text-muted-foreground hover:border-gray-400'}`}
+                        >
+                          {isChecked && <CheckCircle2 className="h-3.5 w-3.5" />}
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Payment methods shown to customers on the booking form</p>
+                </div>
               </div>
             </div>
 
@@ -1363,15 +1643,184 @@ export default function SettingsPage() {
               <div className="flex-1" />
               <Button onClick={handleStorefrontSave} disabled={storefrontSaving} size="sm">
                 {storefrontSaving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                    Saving...
-                  </>
+                  <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Saving...</>
                 ) : (
-                  <>
-                    <CheckCircle2 className="h-4 w-4 mr-1.5" />
-                    Save Storefront
-                  </>
+                  <><CheckCircle2 className="h-4 w-4 mr-1.5" />Save Storefront</>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Fleet Vehicles & Pricing */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Truck className="h-5 w-5 text-orange-500" />
+              Fleet Vehicles & Pricing
+            </CardTitle>
+            <CardDescription>
+              Configure which vehicles appear on your storefront and set custom pricing for each
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {fleetVehicles.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Truck className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">No vehicle types available</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {fleetVehicles.map((fv) => (
+                  <div
+                    key={fv.vehicle_type_id}
+                    className={`rounded-lg border-2 transition-all ${
+                      fv.is_enabled
+                        ? 'border-blue-200 bg-blue-50/30 dark:border-blue-900 dark:bg-blue-950/20'
+                        : 'border-border bg-muted/20 opacity-60'
+                    }`}
+                  >
+                    {/* Vehicle header row */}
+                    <div className="flex items-center gap-3 p-4">
+                      {/* Image / upload */}
+                      <div className="relative w-14 h-14 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden flex-shrink-0 bg-white dark:bg-gray-800">
+                        {fv.image_url ? (
+                          <Image
+                            src={fv.image_url}
+                            alt={fv.display_name || fv.vehicle_name}
+                            width={56}
+                            height={56}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <Truck className="h-6 w-6 text-gray-300" />
+                        )}
+                        <label className="absolute inset-0 cursor-pointer flex items-center justify-center bg-black/0 hover:bg-black/40 transition-all group">
+                          <Upload className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleFleetImageUpload(fv.vehicle_type_id, file);
+                            }}
+                          />
+                        </label>
+                        {fleetImageUploading === fv.vehicle_type_id && (
+                          <div className="absolute inset-0 bg-white/80 flex items-center justify-center">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Name + enable toggle */}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-sm truncate">{fv.vehicle_name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Default: ₱{Number(allVehicleTypes.find(vt => vt.id === fv.vehicle_type_id)?.base_price || 0).toFixed(0)} base
+                          {' · '}₱{Number(allVehicleTypes.find(vt => vt.id === fv.vehicle_type_id)?.price_per_km || 0).toFixed(0)}/km
+                          {fv.max_weight_kg ? ` · ${fv.max_weight_kg}kg` : ''}
+                        </p>
+                      </div>
+
+                      <Switch
+                        checked={fv.is_enabled}
+                        onCheckedChange={(checked) => updateFleetVehicle(fv.vehicle_type_id, 'is_enabled', checked)}
+                      />
+                    </div>
+
+                    {/* Expanded config when enabled */}
+                    {fv.is_enabled && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-blue-100 dark:border-blue-900 pt-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <Label className="text-xs">Display Name</Label>
+                            <Input
+                              value={fv.display_name}
+                              onChange={(e) => updateFleetVehicle(fv.vehicle_type_id, 'display_name', e.target.value)}
+                              placeholder={fv.vehicle_name}
+                              className="h-8 text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Description</Label>
+                            <Input
+                              value={fv.description}
+                              onChange={(e) => updateFleetVehicle(fv.vehicle_type_id, 'description', e.target.value)}
+                              placeholder="e.g. Best for small parcels"
+                              className="h-8 text-sm"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-1">
+                            <Label className="text-xs flex items-center gap-1">
+                              <DollarSign className="h-3 w-3" /> Base Price (₱)
+                            </Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={fv.base_price}
+                              onChange={(e) => updateFleetVehicle(fv.vehicle_type_id, 'base_price', parseFloat(e.target.value) || 0)}
+                              className="h-8 text-sm font-mono"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs flex items-center gap-1">
+                              <DollarSign className="h-3 w-3" /> Per km (₱)
+                            </Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.5}
+                              value={fv.price_per_km}
+                              onChange={(e) => updateFleetVehicle(fv.vehicle_type_id, 'price_per_km', parseFloat(e.target.value) || 0)}
+                              className="h-8 text-sm font-mono"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs flex items-center gap-1">
+                              <DollarSign className="h-3 w-3" /> Extra Stop (₱)
+                            </Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={fv.additional_stop_charge}
+                              onChange={(e) => updateFleetVehicle(fv.vehicle_type_id, 'additional_stop_charge', parseFloat(e.target.value) || 0)}
+                              className="h-8 text-sm font-mono"
+                            />
+                          </div>
+                        </div>
+                        {fv.image_url && (
+                          <button
+                            type="button"
+                            onClick={() => updateFleetVehicle(fv.vehicle_type_id, 'image_url', '')}
+                            className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1"
+                          >
+                            <Trash2 className="h-3 w-3" /> Remove image
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {fleetVehicles.filter(fv => fv.is_enabled).length} of {fleetVehicles.length} vehicles enabled
+              </p>
+              <Button onClick={handleFleetSave} disabled={fleetSaving} size="sm">
+                {fleetSaving ? (
+                  <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Saving...</>
+                ) : (
+                  <><CheckCircle2 className="h-4 w-4 mr-1.5" />Save Fleet</>
                 )}
               </Button>
             </div>
