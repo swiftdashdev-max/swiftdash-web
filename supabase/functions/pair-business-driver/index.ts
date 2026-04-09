@@ -102,28 +102,10 @@ serve(async (req) => {
       });
     }
 
-    // ⏰ Check scheduled delivery timing
+    // Scheduled deliveries: operator dispatches manually from dispatch page
+    // No time-gate — the operator decides when to assign a driver
     if (delivery.is_scheduled && delivery.scheduled_pickup_time) {
-      const scheduledTime = new Date(delivery.scheduled_pickup_time);
-      const now = new Date();
-      const fifteenMinutesBeforePickup = new Date(scheduledTime.getTime() - 15 * 60 * 1000);
-
-      if (now < fifteenMinutesBeforePickup) {
-        const minutesUntilAssignment = Math.ceil(
-          (fifteenMinutesBeforePickup.getTime() - now.getTime()) / (60 * 1000)
-        );
-        
-        return new Response(JSON.stringify({
-          ok: false,
-          scheduled: true,
-          message: `Scheduled delivery - driver will be assigned ${minutesUntilAssignment} minutes before pickup`,
-          scheduled_for: delivery.scheduled_pickup_time,
-          minutes_until_assignment: minutesUntilAssignment
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, 'content-type': 'application/json' }
-        });
-      }
+      console.log(`📅 Scheduled delivery for ${delivery.scheduled_pickup_time} — operator is dispatching now`);
     }
 
     let assignedDriver: { driver_id: string; vehicle_id?: string; distance_km: number; driver_name?: string } | null = null;
@@ -204,6 +186,8 @@ serve(async (req) => {
       console.log(`🤖 Auto dispatch (fleet-only) for business: ${delivery.business_id}`);
 
       // PRIORITY 1: Business Private Fleet
+      // B2B: Match ANY available fleet driver (vehicle_type_id = null)
+      // The business decides which driver to send, not the vehicle type filter
       console.log('🔍 Priority 1: Searching private fleet...');
       const { data: privateFleet, error: privateErr } = await supabase.rpc(
         'find_business_fleet_driver',
@@ -211,7 +195,7 @@ serve(async (req) => {
           p_business_id: delivery.business_id,
           p_pickup_lat: delivery.pickup_latitude,
           p_pickup_lng: delivery.pickup_longitude,
-          p_vehicle_type_id: delivery.vehicle_type_id,
+          p_vehicle_type_id: null,
           p_access_mode: 'private',
           p_max_distance_km: 10
         }
@@ -232,7 +216,7 @@ serve(async (req) => {
             p_business_id: delivery.business_id,
             p_pickup_lat: delivery.pickup_latitude,
             p_pickup_lng: delivery.pickup_longitude,
-            p_vehicle_type_id: delivery.vehicle_type_id,
+            p_vehicle_type_id: null,
             p_access_mode: 'public',
             p_max_distance_km: 10
           }

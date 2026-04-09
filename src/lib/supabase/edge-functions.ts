@@ -171,10 +171,16 @@ export class EdgeFunctions {
 
   /**
    * Pair driver with delivery using Edge Function
+   * Supports auto and manual modes, plus reassignment
    */
-  async pairDriver(deliveryId: string) {
+  async pairDriver(deliveryId: string, options?: { mode?: 'auto' | 'manual'; driverId?: string; assignedBy?: string }) {
     const { data, error } = await this.supabase.functions.invoke('pair-business-driver', {
-      body: { deliveryId }
+      body: { 
+        deliveryId,
+        mode: options?.mode || 'auto',
+        driverId: options?.driverId,
+        assignedBy: options?.assignedBy,
+      }
     });
 
     if (error) {

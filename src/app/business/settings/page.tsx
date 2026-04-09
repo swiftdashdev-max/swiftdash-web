@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Image from 'next/image';
 import { 
   Settings as SettingsIcon, 
@@ -46,6 +47,7 @@ import {
   Trash2,
   GripVertical,
   DollarSign,
+  MapPin,
 } from 'lucide-react';
 
 interface VehicleTypeRow {
@@ -153,6 +155,7 @@ export default function SettingsPage() {
   const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [fleetSaving, setFleetSaving] = useState(false);
   const [fleetImageUploading, setFleetImageUploading] = useState<string | null>(null);
+  const [dispatchRadiusKm, setDispatchRadiusKm] = useState(50);
 
   // Custom domain
   const [customDomain, setCustomDomain] = useState('');
@@ -266,6 +269,7 @@ export default function SettingsPage() {
           setHeaderTextColor(settings.header_text_color || '');
           setBodyTextColor(settings.body_text_color || '');
           setCardBgColor(settings.card_bg_color || '');
+          setDispatchRadiusKm(settings.dispatch_radius_km || 50);
 
           // Storefront settings
           setStorefrontEnabled(data.storefront_enabled === true);
@@ -505,7 +509,20 @@ export default function SettingsPage() {
           .eq('id', fv.id);
       }
 
-      toast({ title: 'Fleet saved! ✓', description: `${enabledVehicles.length} vehicle(s) configured for your storefront` });
+      // Save dispatch radius to business settings
+      const { data: currentBiz } = await supabase
+        .from('business_accounts')
+        .select('settings')
+        .eq('id', businessId)
+        .single();
+
+      const updatedSettings = { ...(currentBiz?.settings || {}), dispatch_radius_km: dispatchRadiusKm };
+      await supabase
+        .from('business_accounts')
+        .update({ settings: updatedSettings, updated_at: new Date().toISOString() })
+        .eq('id', businessId);
+
+      toast({ title: 'Fleet saved! ✓', description: `${enabledVehicles.length} vehicle(s) configured. Dispatch radius: ${dispatchRadiusKm}km.` });
     } catch (err: any) {
       toast({ title: 'Error', description: err.message || 'Failed to save fleet vehicles', variant: 'destructive' });
     } finally {
@@ -737,6 +754,7 @@ export default function SettingsPage() {
         email_subject: emailSubject || null,
         show_driver_phone: showDriverPhone,
         show_pickup_address: showPickupAddress,
+        dispatch_radius_km: dispatchRadiusKm,
         tracking_page: {
           show_driver_info: showDriverInfo,
           show_support_contact: showSupportContact,
@@ -810,7 +828,32 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div className="space-y-6">
+      <Tabs defaultValue="general" className="space-y-6">
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="general" className="flex items-center gap-1.5 text-xs sm:text-sm">
+            <Building2 className="h-3.5 w-3.5 hidden sm:block" />
+            General
+          </TabsTrigger>
+          <TabsTrigger value="branding" className="flex items-center gap-1.5 text-xs sm:text-sm">
+            <Palette className="h-3.5 w-3.5 hidden sm:block" />
+            Branding
+          </TabsTrigger>
+          <TabsTrigger value="notifications" className="flex items-center gap-1.5 text-xs sm:text-sm">
+            <MessageSquare className="h-3.5 w-3.5 hidden sm:block" />
+            Notifications
+          </TabsTrigger>
+          <TabsTrigger value="storefront" className="flex items-center gap-1.5 text-xs sm:text-sm">
+            <Globe className="h-3.5 w-3.5 hidden sm:block" />
+            Storefront
+          </TabsTrigger>
+          <TabsTrigger value="fleet" className="flex items-center gap-1.5 text-xs sm:text-sm">
+            <Truck className="h-3.5 w-3.5 hidden sm:block" />
+            Fleet
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ═══════════════ GENERAL TAB ═══════════════ */}
+        <TabsContent value="general" className="space-y-6">
         {/* Business Information */}
         <Card>
           <CardHeader>
@@ -851,7 +894,29 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* White-Label Branding */}
+        {/* Save Button */}
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Save Changes
+              </>
+            )}
+          </Button>
+        </div>
+        </TabsContent>
+
+        {/* ═══════════════ BRANDING TAB ═══════════════ */}
+        <TabsContent value="branding" className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -1422,6 +1487,47 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Preview Link */}
+        <Card className="border-dashed">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-medium text-sm">Preview your tracking page</p>
+                <p className="text-xs text-muted-foreground mt-1">Save your settings first, then open a real tracking link to see your changes live.</p>
+              </div>
+              <Button variant="outline" size="sm" className="flex-shrink-0" asChild>
+                <a href={generateTrackingPreviewUrl()} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5">
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open Preview
+                </a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Save Button */}
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Save Changes
+              </>
+            )}
+          </Button>
+        </div>
+        </TabsContent>
+
+        {/* ═══════════════ NOTIFICATIONS TAB ═══════════════ */}
+        <TabsContent value="notifications" className="space-y-6">
         {/* SMS Notifications */}
         <Card>
           <CardHeader>
@@ -1583,6 +1689,29 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Save Button */}
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Save Changes
+              </>
+            )}
+          </Button>
+        </div>
+        </TabsContent>
+
+        {/* ═══════════════ STOREFRONT TAB ═══════════════ */}
+        <TabsContent value="storefront" className="space-y-6">
         {/* Storefront Settings */}
         <Card>
           <CardHeader>
@@ -1913,6 +2042,43 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+        </TabsContent>
+
+        {/* ═══════════════ FLEET TAB ═══════════════ */}
+        <TabsContent value="fleet" className="space-y-6">
+        {/* Dispatch Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-green-500" />
+              Dispatch Settings
+            </CardTitle>
+            <CardDescription>
+              Configure auto-dispatch behavior for your fleet
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Auto-Dispatch Radius</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  min={1}
+                  max={500}
+                  step={5}
+                  value={dispatchRadiusKm}
+                  onChange={(e) => setDispatchRadiusKm(Math.max(1, Math.min(500, parseInt(e.target.value) || 50)))}
+                  className="w-24 h-9 text-sm font-mono"
+                />
+                <span className="text-sm text-muted-foreground">km</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Maximum distance from pickup location to search for available drivers during auto-dispatch.
+                Drivers beyond this radius will not be matched. Default: 50km.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Fleet Vehicles & Pricing */}
         <Card>
@@ -2088,45 +2254,9 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+        </TabsContent>
 
-        {/* Preview Link */}
-        <Card className="border-dashed">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="font-medium text-sm">Preview your tracking page</p>
-                <p className="text-xs text-muted-foreground mt-1">Save your settings first, then open a real tracking link to see your changes live.</p>
-              </div>
-              <Button variant="outline" size="sm" className="flex-shrink-0" asChild>
-                <a href={generateTrackingPreviewUrl()} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5">
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  Open Preview
-                </a>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Save Button */}
-        <div className="flex justify-end gap-3">
-          <Button variant="outline" onClick={() => window.location.reload()}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="h-4 w-4 mr-2" />
-                Save Changes
-              </>
-            )}
-          </Button>
-        </div>
-      </div>
+      </Tabs>
     </div>
     </>
   );

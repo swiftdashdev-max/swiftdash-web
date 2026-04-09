@@ -226,7 +226,8 @@ serve(async (req) => {
         business_accounts!inner(
           business_name,
           business_phone,
-          settings
+          settings,
+          custom_domain
         )
       `)
       .eq('id', deliveryId)
@@ -243,6 +244,11 @@ serve(async (req) => {
     const business = delivery.business_accounts;
     const businessName = business?.business_name || 'SwiftDash';
     const settings = business?.settings || {};
+
+    // Use custom domain for tracking links when available
+    const trackingBaseUrl = business?.custom_domain
+      ? `https://${business.custom_domain}`
+      : appUrl;
 
     // Check if email on booking is enabled (default: true)
     const emailEnabled = settings.email_on_booking !== false;
@@ -317,20 +323,20 @@ serve(async (req) => {
         const { trackingCode, recipientEmail, recipientName, address } = stop;
         if (!recipientEmail) continue;
 
-        const trackingUrl = `${appUrl}/track/${trackingCode}`;
+        const trackingUrl = `${trackingBaseUrl}/track/${trackingCode}`;
         const result = await sendEmail(recipientEmail, recipientName || 'Customer', trackingCode, trackingUrl, address);
         results.push(result);
       }
 
       // Optionally notify pickup contact
       if (notifyPickup && delivery.pickup_contact_email) {
-        const trackingUrl = `${appUrl}/track/${delivery.tracking_number}`;
+        const trackingUrl = `${trackingBaseUrl}/track/${delivery.tracking_number}`;
         const result = await sendEmail(delivery.pickup_contact_email, delivery.pickup_contact_name || 'Sender', delivery.tracking_number, trackingUrl);
         results.push(result);
       }
     } else {
-      // ── Single delivery ────────────────────────────────────────────────────
-      const trackingUrl = `${appUrl}/track/${delivery.tracking_number}`;
+      // ── Single delivery ──────────────────────────────────────────────────────
+      const trackingUrl = `${trackingBaseUrl}/track/${delivery.tracking_number}`;
 
       if (delivery.delivery_contact_email) {
         const result = await sendEmail(delivery.delivery_contact_email, delivery.delivery_contact_name || 'Customer', delivery.tracking_number, trackingUrl);

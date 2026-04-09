@@ -150,7 +150,8 @@ serve(async (req) => {
         delivery_contact_phone,
         business_accounts!inner(
           business_name,
-          settings
+          settings,
+          custom_domain
         )
       `)
       .eq('id', deliveryId)
@@ -167,6 +168,11 @@ serve(async (req) => {
     const business = delivery.business_accounts;
     const businessName = business?.business_name || 'SwiftDash';
     const settings = business?.settings || {};
+
+    // Use custom domain for tracking links when available
+    const trackingBaseUrl = business?.custom_domain
+      ? `https://${business.custom_domain}`
+      : appUrl;
 
     // Check if SMS on booking is enabled (default: true)
     const smsEnabled = settings.sms_on_booking !== false;
@@ -263,7 +269,7 @@ serve(async (req) => {
           continue;
         }
 
-        const trackingUrl = `${appUrl}/track/${trackingCode}`;
+        const trackingUrl = `${trackingBaseUrl}/track/${trackingCode}`;
         const smsBody = buildSmsBody(recipientName || 'Customer', trackingUrl);
         const result = await sendSms(recipientPhone, smsBody);
         results.push(result);
@@ -271,14 +277,14 @@ serve(async (req) => {
 
       // Optionally notify pickup contact with the main tracking number
       if (notifyPickup && delivery.pickup_contact_phone) {
-        const trackingUrl = `${appUrl}/track/${delivery.tracking_number}`;
+        const trackingUrl = `${trackingBaseUrl}/track/${delivery.tracking_number}`;
         const smsBody = buildSmsBody(delivery.pickup_contact_name || 'Sender', trackingUrl);
         const result = await sendSms(delivery.pickup_contact_phone, smsBody);
         results.push(result);
       }
     } else {
       // ── Single delivery: SMS to delivery contact ────────────────────────────
-      const trackingUrl = `${appUrl}/track/${delivery.tracking_number}`;
+      const trackingUrl = `${trackingBaseUrl}/track/${delivery.tracking_number}`;
 
       if (delivery.delivery_contact_phone) {
         const smsBody = buildSmsBody(delivery.delivery_contact_name || 'Customer', trackingUrl);

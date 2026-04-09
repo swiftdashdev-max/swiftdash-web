@@ -107,7 +107,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar as CalendarPicker } from '@/components/ui/calendar';
 import { DateRange } from 'react-day-picker';
 import { formatDuration } from '@/lib/mapbox-routing';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
 import jsPDF from 'jspdf';
 import { DispatchMapView } from '@/components/dispatch-map-view';
 
@@ -428,189 +428,147 @@ export default function DispatchPage() {
         }
       }
 
-      // Fetch total count for pagination (with date filter applied)
-      let countQuery = supabase
-        .from('deliveries')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId);
-      if (dateStart) countQuery = countQuery.gte('created_at', dateStart);
-      if (dateEnd) countQuery = countQuery.lt('created_at', dateEnd);
-      const { count } = await countQuery;
-      
-      setTotalCount(count || 0);
-
-      // Fetch server-side status counts (parallel queries)
-      const statusesToCount = ['pending', 'driver_offered', 'driver_assigned', 'delivered', 'cancelled'];
-      const inTransitStatuses = ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'];
-
-      const countPromises = statusesToCount.map(async (status) => {
-        let q = supabase.from('deliveries').select('*', { count: 'exact', head: true })
-          .eq('business_id', businessId).eq('status', status);
-        if (dateStart) q = q.gte('created_at', dateStart);
-        if (dateEnd) q = q.lt('created_at', dateEnd);
-        const { count: c } = await q;
-        return { status, count: c || 0 };
-      });
-
-      // In-transit is a group of statuses
-      const inTransitPromise = (async () => {
-        let q = supabase.from('deliveries').select('*', { count: 'exact', head: true })
-          .eq('business_id', businessId).in('status', inTransitStatuses);
-        if (dateStart) q = q.gte('created_at', dateStart);
-        if (dateEnd) q = q.lt('created_at', dateEnd);
-        const { count: c } = await q;
-        return c || 0;
-      })();
-
-      // Revenue sum — fetch delivered orders' total_price
-      const revenuePromise = (async () => {
-        let q = supabase.from('deliveries').select('total_price')
-          .eq('business_id', businessId).eq('status', 'delivered');
-        if (dateStart) q = q.gte('created_at', dateStart);
-        if (dateEnd) q = q.lt('created_at', dateEnd);
-        const { data: revData } = await q;
-        return (revData || []).reduce((sum: number, d: any) => sum + (d.total_price || 0), 0);
-      })();
-
-      const [countsResults, inTransitCount, revenue] = await Promise.all([
-        Promise.all(countPromises),
-        inTransitPromise,
-        revenuePromise,
-      ]);
-
-      const newCounts: Record<string, number> = { total: count || 0, in_transit: inTransitCount };
-      countsResults.forEach(({ status, count: c }) => { newCounts[status] = c; });
-      setStatusCounts(newCounts);
-      setTotalRevenue(revenue);
-
-      // Fetch deliveries with pagination and sorting
+      // ── All queries run in parallel ──────────────────────
       const from = (currentPage - 1) * itemsPerPage;
       const to = from + itemsPerPage - 1;
-      
+
+      // 1) Stats: single DB function replaces 8 count queries + revenue sum
+      const statsPromise = supabase.rpc('get_delivery_stats', {
+        p_business_id: businessId,
+        p_date_start: dateStart,
+        p_date_end: dateEnd,
+      });
+
+      // 2) Deliveries page
       let deliveriesQuery = supabase
         .from('deliveries')
         .select('id, tracking_number, status, pickup_address, delivery_address, pickup_latitude, pickup_longitude, delivery_latitude, delivery_longitude, vehicle_type_id, distance_km, total_price, is_scheduled, scheduled_pickup_time, created_at, driver_id, pickup_contact_name, pickup_contact_phone, delivery_contact_name, delivery_contact_phone, is_multi_stop, total_stops, business_id, fleet_vehicle_id, payment_status, payment_method, payment_by, delivery_fee, total_amount, package_description, delivery_notes, estimated_duration, pickup_proof_photo_url, proof_photo_url, signature_data')
         .eq('business_id', businessId)
         .order(sortColumn, { ascending: sortDirection === 'asc' })
         .range(from, to);
-
       if (dateStart) deliveriesQuery = deliveriesQuery.gte('created_at', dateStart);
       if (dateEnd) deliveriesQuery = deliveriesQuery.lt('created_at', dateEnd);
+      const deliveriesPromise = deliveriesQuery;
 
-      const { data: deliveriesData, error: deliveriesError } = await deliveriesQuery;
-
-      if (deliveriesError) {
-        console.error('❌ Error fetching deliveries:', deliveriesError);
-      } else {
-        setDeliveries(deliveriesData || []);
-        const totalPages = Math.ceil((count || 0) / itemsPerPage);
-        console.log(`📦 Deliveries: Page ${currentPage}/${totalPages} (${deliveriesData?.length || 0}/${count || 0} total)`);
-      }
-
-      // Fetch available drivers - limited to top 100 by rating for performance
-      const startTime = Date.now();
-      const { data: driversData, error: driversError } = await supabase
+      // 3) Drivers — fetch profiles + user names in one join via a DB view workaround:
+      //    Fetch driver_profiles, then batch-fetch all user_profiles at once (not N+1)
+      const driversPromise = supabase
         .from('driver_profiles')
-        .select(`
-          id,
-          vehicle_type_id,
-          is_online,
-          rating,
-          vehicle_model,
-          plate_number,
-          employment_type,
-          managed_by_business_id
-        `)
+        .select('id, vehicle_type_id, is_online, rating, vehicle_model, plate_number, employment_type, managed_by_business_id')
         .eq('is_online', true)
         .order('rating', { ascending: false })
         .limit(100);
-      
-      const driverLoadTime = Date.now() - startTime;
-      console.log(`⚡ Loaded ${driversData?.length || 0} drivers in ${driverLoadTime}ms`);
 
-      if (driversError) {
-        console.error('❌ Error fetching drivers:', driversError);
-        console.error('❌ Driver error details:', JSON.stringify(driversError, null, 2));
-      } else {
-        console.log('🚗 Drivers loaded:', driversData);
-        console.log('🚗 Number of online drivers:', driversData?.length || 0);
-        
-        // Fetch user profile data for each driver
-        const driversWithProfiles: Driver[] = [];
-        if (driversData && driversData.length > 0) {
-          for (const driver of driversData) {
-            try {
-              // Try user_profiles with correct column names
-              const { data: userProfile } = await supabase
-                .from('user_profiles')
-                .select('first_name, last_name, phone_number')
-                .eq('id', driver.id)
-                .single();
-                
-              driversWithProfiles.push({
-                ...driver,
-                full_name: userProfile ? `${userProfile.first_name} ${userProfile.last_name}` : `Driver ${driver.id.substring(0, 8)}`,
-                phone: userProfile?.phone_number || 'N/A'
-              });
-            } catch (profileError) {
-              console.warn(`Could not fetch profile for driver ${driver.id}`);
-              driversWithProfiles.push({
-                ...driver,
-                full_name: `Driver ${driver.id.substring(0, 8)}`,
-                phone: 'N/A'
-              });
-            }
-          }
-        }
-        
-        setDrivers(driversWithProfiles);
-      }
-
-      // Fetch vehicle types for pricing
-      const { data: vehicleTypesData, error: vehicleTypesError } = await supabase
+      // 4) Vehicle types (small table, fast)
+      const vehicleTypesPromise = supabase
         .from('vehicle_types')
         .select('id, name, base_price, price_per_km, max_weight_kg, description')
         .order('base_price', { ascending: true });
 
-      if (vehicleTypesError) {
-        console.error('❌ Error fetching vehicle types:', vehicleTypesError);
-      } else {
-        setVehicleTypes(vehicleTypesData || []);
-        console.log('🚚 Vehicle types loaded:', vehicleTypesData);
-      }
-
-      // Fetch business fleet vehicles
-      const { data: fleetData, error: fleetError } = await supabase
+      // 5) Fleet vehicles
+      const fleetPromise = supabase
         .from('business_fleet')
         .select('id, vehicle_type_id, vehicle_model, plate_number, assigned_driver_id')
         .eq('business_id', businessId);
 
-      if (fleetError) {
-        console.error('❌ Error fetching fleet:', fleetError);
+      // ── Execute all 5 queries in parallel ──────────────
+      const startTime = Date.now();
+      const [statsRes, deliveriesRes, driversRes, vehicleTypesRes, fleetRes] = await Promise.all([
+        statsPromise,
+        deliveriesPromise,
+        driversPromise,
+        vehicleTypesPromise,
+        fleetPromise,
+      ]);
+      console.log(`⚡ All parallel queries completed in ${Date.now() - startTime}ms`);
+
+      // ── Process stats ──────────────────────────────────
+      if (statsRes.data) {
+        const stats = statsRes.data;
+        setTotalCount(stats.total || 0);
+        setStatusCounts({
+          total: stats.total || 0,
+          pending: stats.pending || 0,
+          driver_offered: stats.driver_offered || 0,
+          driver_assigned: stats.driver_assigned || 0,
+          in_transit: stats.in_transit || 0,
+          delivered: stats.delivered || 0,
+          cancelled: stats.cancelled || 0,
+        });
+        setTotalRevenue(stats.revenue || 0);
+      }
+
+      // ── Process deliveries ──────────────────────────────
+      if (deliveriesRes.error) {
+        console.error('❌ Error fetching deliveries:', deliveriesRes.error);
       } else {
-        // Fetch driver names for assigned drivers
-        const fleetWithDrivers: FleetVehicle[] = [];
-        if (fleetData) {
-          for (const vehicle of fleetData) {
-            let driverName = 'Unassigned';
-            if (vehicle.assigned_driver_id) {
-              const { data: driverProfile } = await supabase
-                .from('user_profiles')
-                .select('first_name, last_name')
-                .eq('id', vehicle.assigned_driver_id)
-                .single();
-              if (driverProfile) {
-                driverName = `${driverProfile.first_name} ${driverProfile.last_name}`;
-              }
-            }
-            fleetWithDrivers.push({
-              ...vehicle,
-              driver_name: driverName
-            });
-          }
+        setDeliveries(deliveriesRes.data || []);
+        const totalPages = Math.ceil((statsRes.data?.total || 0) / itemsPerPage);
+        console.log(`📦 Deliveries: Page ${currentPage}/${totalPages} (${deliveriesRes.data?.length || 0}/${statsRes.data?.total || 0} total)`);
+      }
+
+      // ── Process drivers — batch user profile lookup ─────
+      if (driversRes.error) {
+        console.error('❌ Error fetching drivers:', driversRes.error);
+      } else {
+        const rawDrivers = driversRes.data || [];
+        if (rawDrivers.length > 0) {
+          // Single batch query for all driver user profiles
+          const driverIds = rawDrivers.map((d: any) => d.id);
+          const { data: profiles } = await supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, phone_number')
+            .in('id', driverIds);
+
+          const profileMap = new Map((profiles || []).map((p: any) => [p.id, p]));
+          const driversWithProfiles: Driver[] = rawDrivers.map((driver: any) => {
+            const p = profileMap.get(driver.id);
+            return {
+              ...driver,
+              full_name: p ? `${p.first_name} ${p.last_name}` : `Driver ${driver.id.substring(0, 8)}`,
+              phone: p?.phone_number || 'N/A',
+            };
+          });
+          setDrivers(driversWithProfiles);
+        } else {
+          setDrivers([]);
         }
+        console.log(`🚗 ${rawDrivers.length} online drivers loaded`);
+      }
+
+      // ── Process vehicle types ───────────────────────────
+      if (vehicleTypesRes.error) {
+        console.error('❌ Error fetching vehicle types:', vehicleTypesRes.error);
+      } else {
+        setVehicleTypes(vehicleTypesRes.data || []);
+      }
+
+      // ── Process fleet — batch driver name lookup ────────
+      if (fleetRes.error) {
+        console.error('❌ Error fetching fleet:', fleetRes.error);
+      } else {
+        const rawFleet = fleetRes.data || [];
+        const assignedIds = rawFleet
+          .filter((v: any) => v.assigned_driver_id)
+          .map((v: any) => v.assigned_driver_id);
+
+        let fleetProfileMap = new Map<string, any>();
+        if (assignedIds.length > 0) {
+          const { data: fleetProfiles } = await supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', assignedIds);
+          fleetProfileMap = new Map((fleetProfiles || []).map((p: any) => [p.id, p]));
+        }
+
+        const fleetWithDrivers: FleetVehicle[] = rawFleet.map((vehicle: any) => {
+          const p = vehicle.assigned_driver_id ? fleetProfileMap.get(vehicle.assigned_driver_id) : null;
+          return {
+            ...vehicle,
+            driver_name: p ? `${p.first_name} ${p.last_name}` : 'Unassigned',
+          };
+        });
         setFleetVehicles(fleetWithDrivers);
-        console.log('🚗 Fleet vehicles loaded:', fleetWithDrivers);
       }
 
     } catch (error) {
@@ -1032,6 +990,18 @@ export default function DispatchPage() {
       alert('Please select at least one delivery to assign');
       return;
     }
+    // Filter out cancelled/delivered deliveries
+    const assignable = selectedDeliveries.filter(id => {
+      const d = deliveries.find(del => del.id === id);
+      return d && !['delivered', 'cancelled'].includes(d.status);
+    });
+    if (assignable.length === 0) {
+      alert('Cannot assign drivers to cancelled or delivered orders');
+      return;
+    }
+    if (assignable.length < selectedDeliveries.length) {
+      setSelectedDeliveries(assignable);
+    }
     // Reset assignment state
     setSelectedDriver('');
     setSelectedVehicleType('');
@@ -1164,51 +1134,33 @@ export default function DispatchPage() {
       if (!user) throw new Error('User not authenticated');
 
       const driver = drivers.find(d => d.id === selectedDriver);
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      let successCount = 0;
+      let failCount = 0;
 
       for (const deliveryId of selectedDeliveries) {
-        const delivery = deliveries.find(d => d.id === deliveryId);
-        if (!delivery) continue;
+        try {
+          console.log('🚛 Manual assigning driver:', { deliveryId, driverId: selectedDriver, assignedBy: user.id });
 
-        // Find if this driver has an associated fleet vehicle
-        const fleetVehicle = fleetVehicles.find(v => v.assigned_driver_id === selectedDriver);
-        const pricing = driver?.vehicle_type_id
-          ? calculatePricing(driver.vehicle_type_id, delivery.distance_km || 0)
-          : null;
+          const result = await pairDriver(deliveryId, {
+            mode: 'manual',
+            driverId: selectedDriver,
+            assignedBy: user.id,
+          });
 
-        const assignParams = {
-          delivery_id: deliveryId,
-          driver_id: selectedDriver,
-          assigned_by: user.id,
-          assignment_type: 'manual',
-          driver_source: 'fleet',
-          vehicle_type_id: driver?.vehicle_type_id || null,
-          fleet_vehicle_id: fleetVehicle?.id || null,
-          total_price: pricing?.total || 0,
-          delivery_fee: pricing?.total || 0,
-          payment_by: null,
-          payment_method: null,
-        };
-
-        console.log('🚛 Assigning driver:', assignParams);
-
-        const response = await fetch(`${supabaseUrl}/functions/v1/assign-business-driver`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabaseAnonKey}`,
-            'apikey': supabaseAnonKey || '',
-          },
-          body: JSON.stringify(assignParams),
-        });
-
-        const data = await response.json();
-        if (!response.ok || !data.success) {
-          throw new Error(data.error || `Assignment failed for delivery ${deliveryId}`);
+          if (result && result.ok) {
+            successCount++;
+            console.log(`✅ Manually assigned driver to delivery ${deliveryId}:`, result);
+            sendTrackingNotifications(deliveryId);
+          } else {
+            failCount++;
+            console.warn(`⚠️ Manual assignment failed for ${deliveryId}:`, result?.message);
+            toast({ title: 'Assignment issue', description: result?.message || 'Unknown error', variant: 'destructive' });
+          }
+        } catch (err) {
+          failCount++;
+          console.error(`❌ Error manual-assigning ${deliveryId}:`, err);
         }
-
-        sendTrackingNotifications(deliveryId);
       }
 
       await fetchData();
@@ -1216,7 +1168,14 @@ export default function DispatchPage() {
       setSelectedDeliveries([]);
       setSelectedDriver('');
       setDriverSearchQuery('');
-      toast({ title: '✅ Driver assigned', description: `${selectedDeliveries.length} delivery(ies) assigned to ${driver?.full_name || 'driver'}.` });
+
+      if (failCount > 0 && successCount > 0) {
+        toast({ title: '⚠️ Partial Assignment', description: `${successCount} assigned, ${failCount} failed.` });
+      } else if (failCount > 0) {
+        toast({ title: '❌ Assignment Failed', description: `${failCount} delivery(ies) could not be assigned.`, variant: 'destructive' });
+      } else {
+        toast({ title: '✅ Driver assigned', description: `${successCount} delivery(ies) assigned to ${driver?.full_name || 'driver'}.` });
+      }
     } catch (error) {
       console.error('❌ Error assigning:', error);
       toast({ title: 'Assignment failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
@@ -1976,7 +1935,9 @@ export default function DispatchPage() {
       } else if (statusFilter === 'in_transit') {
         matchesStatus = ['going_to_pickup', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(delivery.status);
       } else if (statusFilter === 'delivered') {
-        matchesStatus = ['delivered', 'cancelled'].includes(delivery.status);
+        matchesStatus = delivery.status === 'delivered';
+      } else if (statusFilter === 'cancelled') {
+        matchesStatus = delivery.status === 'cancelled';
       } else {
         matchesStatus = delivery.status === statusFilter;
       }
@@ -1991,6 +1952,43 @@ export default function DispatchPage() {
   const assignedCount = statusCounts.driver_assigned || 0;
   const inTransitCount = statusCounts.in_transit || 0;
   const deliveredCount = statusCounts.delivered || 0;
+  const cancelledCount = statusCounts.cancelled || 0;
+
+  // Helper: get driver name for a delivery
+  const getDriverName = (delivery: Delivery): string | null => {
+    if (!delivery.driver_id) return null;
+    const driver = drivers.find(d => d.id === delivery.driver_id);
+    if (driver?.full_name) return driver.full_name;
+    // Check fleet vehicles for driver name
+    const fleetVehicle = fleetVehicles.find(v => v.assigned_driver_id === delivery.driver_id);
+    if (fleetVehicle?.driver_name && fleetVehicle.driver_name !== 'Unassigned') return fleetVehicle.driver_name;
+    return 'Assigned';
+  };
+
+  // Helper: relative time display
+  const getTimeDisplay = (delivery: Delivery): { label: string; urgent?: boolean } => {
+    if (delivery.is_scheduled && delivery.scheduled_pickup_time) {
+      const scheduledDate = new Date(delivery.scheduled_pickup_time);
+      const now = new Date();
+      const diffMs = scheduledDate.getTime() - now.getTime();
+      const diffMin = Math.round(diffMs / 60000);
+      if (diffMin < 0) return { label: `Due ${Math.abs(diffMin)}m ago`, urgent: true };
+      if (diffMin <= 30) return { label: `Due in ${diffMin}m`, urgent: true };
+      if (diffMin <= 120) return { label: `Due in ${Math.round(diffMin / 60)}h ${diffMin % 60}m`, urgent: false };
+      return { label: format(scheduledDate, 'MMM d, h:mm a'), urgent: false };
+    }
+    const created = new Date(delivery.created_at);
+    const now = new Date();
+    const diffMs = now.getTime() - created.getTime();
+    const diffMin = Math.round(diffMs / 60000);
+    const isPendingLong = delivery.status === 'pending' && diffMin > 60;
+    if (diffMin < 1) return { label: 'Just now', urgent: false };
+    try {
+      return { label: formatDistanceToNow(created, { addSuffix: true }), urgent: isPendingLong };
+    } catch {
+      return { label: format(created, 'MMM d'), urgent: false };
+    }
+  };
 
   if (loading || userLoading) {
     return (
@@ -2071,62 +2069,42 @@ export default function DispatchPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className={`grid gap-4 md:grid-cols-5 ${viewMode === 'map' ? 'hidden' : ''}`}>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total</CardTitle>
-            <Package className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{statusCounts.total || totalCount}</div>
-            <p className="text-xs text-muted-foreground mt-1">All deliveries</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pending Dispatch</CardTitle>
-            <AlertCircle className="h-4 w-4 text-orange-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{pendingCount}</div>
-            <p className="text-xs text-muted-foreground mt-1">Needs assignment</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">In Transit</CardTitle>
-            <Truck className="h-4 w-4 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{inTransitCount}</div>
-            <p className="text-xs text-muted-foreground mt-1">Currently active</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Delivered</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{statusCounts.delivered || 0}</div>
-            <p className="text-xs text-muted-foreground mt-1">Completed</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Revenue</CardTitle>
-            <DollarSign className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">₱{totalRevenue.toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
-            <p className="text-xs text-muted-foreground mt-1">From delivered orders</p>
-          </CardContent>
-        </Card>
+      {/* Compact Stats Bar */}
+      <div className={`${viewMode === 'map' ? 'hidden' : ''}`}>
+        <div className="flex items-center gap-1 p-1.5 rounded-lg border bg-card text-card-foreground shadow-sm flex-wrap">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted/50">
+            <Package className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-sm font-semibold">{statusCounts.total || totalCount}</span>
+            <span className="text-xs text-muted-foreground">Total</span>
+          </div>
+          <div className="w-px h-6 bg-border" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer" onClick={() => setStatusFilter('pending')}>
+            <div className="h-2 w-2 rounded-full bg-orange-500" />
+            <span className="text-sm font-semibold">{pendingCount}</span>
+            <span className="text-xs text-muted-foreground">Pending</span>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer" onClick={() => setStatusFilter('driver_assigned')}>
+            <div className="h-2 w-2 rounded-full bg-blue-500" />
+            <span className="text-sm font-semibold">{assignedCount}</span>
+            <span className="text-xs text-muted-foreground">Assigned</span>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer" onClick={() => setStatusFilter('in_transit')}>
+            <div className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
+            <span className="text-sm font-semibold">{inTransitCount}</span>
+            <span className="text-xs text-muted-foreground">In Transit</span>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer" onClick={() => setStatusFilter('delivered')}>
+            <div className="h-2 w-2 rounded-full bg-green-500" />
+            <span className="text-sm font-semibold">{deliveredCount}</span>
+            <span className="text-xs text-muted-foreground">Delivered</span>
+          </div>
+          <div className="flex-1" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-green-50 dark:bg-green-950/30">
+            <DollarSign className="h-3.5 w-3.5 text-green-600" />
+            <span className="text-sm font-bold text-green-700 dark:text-green-400">₱{totalRevenue.toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
+            <span className="text-xs text-green-600/70">revenue</span>
+          </div>
+        </div>
       </div>
 
       {/* Actions Bar */}
@@ -2246,12 +2224,12 @@ export default function DispatchPage() {
             </Popover>
             <Tabs value={statusFilter} onValueChange={setStatusFilter} className="w-auto">
               <TabsList>
-                <TabsTrigger value="all">All ({deliveries.length})</TabsTrigger>
-                <TabsTrigger value="pending">Pending ({pendingCount})</TabsTrigger>
-                <TabsTrigger value="driver_offered">Offered ({offeredCount})</TabsTrigger>
-                <TabsTrigger value="driver_assigned">Assigned ({assignedCount})</TabsTrigger>
-                <TabsTrigger value="in_transit">In Transit ({inTransitCount})</TabsTrigger>
-                <TabsTrigger value="delivered">Completed ({deliveredCount})</TabsTrigger>
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="pending" className="gap-1.5">Pending {pendingCount > 0 && <Badge variant="secondary" className="h-5 px-1.5 text-xs">{pendingCount}</Badge>}</TabsTrigger>
+                <TabsTrigger value="driver_assigned">Assigned</TabsTrigger>
+                <TabsTrigger value="in_transit">In Transit</TabsTrigger>
+                <TabsTrigger value="delivered">Delivered</TabsTrigger>
+                <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
@@ -2260,7 +2238,7 @@ export default function DispatchPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-12">
+                <TableHead className="w-10">
                   <Checkbox
                     checked={
                       filteredDeliveries.length > 0 &&
@@ -2269,55 +2247,48 @@ export default function DispatchPage() {
                     onCheckedChange={handleSelectAll}
                   />
                 </TableHead>
-                <TableHead>
+                <TableHead className="w-[130px]">
                   <button onClick={() => handleSort('tracking_number')} className="flex items-center hover:text-foreground transition-colors">
                     Tracking # <SortIcon column="tracking_number" />
                   </button>
                 </TableHead>
-                <TableHead>
+                <TableHead className="w-[120px]">
                   <button onClick={() => handleSort('status')} className="flex items-center hover:text-foreground transition-colors">
                     Status <SortIcon column="status" />
                   </button>
                 </TableHead>
-                <TableHead>Payment</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Pickup</TableHead>
-                <TableHead>Dropoff</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>
-                  <button onClick={() => handleSort('distance_km')} className="flex items-center hover:text-foreground transition-colors">
-                    Distance <SortIcon column="distance_km" />
-                  </button>
-                </TableHead>
-                <TableHead>
+                <TableHead>Route</TableHead>
+                <TableHead className="w-[140px]">Driver</TableHead>
+                <TableHead className="w-[100px]">
                   <button onClick={() => handleSort('total_price')} className="flex items-center hover:text-foreground transition-colors">
-                    Cost <SortIcon column="total_price" />
+                    Details <SortIcon column="total_price" />
                   </button>
                 </TableHead>
-                <TableHead>ETA</TableHead>
-                <TableHead>
+                <TableHead className="w-[110px]">
                   <button onClick={() => handleSort('created_at')} className="flex items-center hover:text-foreground transition-colors">
-                    Created <SortIcon column="created_at" />
+                    Time <SortIcon column="created_at" />
                   </button>
                 </TableHead>
-                <TableHead className="w-12"></TableHead>
+                <TableHead className="w-10"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredDeliveries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     <Package className="h-12 w-12 mx-auto mb-3 opacity-50" />
                     <p>No deliveries found</p>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredDeliveries.map((delivery) => (
+                filteredDeliveries.map((delivery) => {
+                  const driverName = getDriverName(delivery);
+                  const timeDisplay = getTimeDisplay(delivery);
+                  return (
                   <TableRow
                     key={delivery.id}
-                    className={`cursor-pointer hover:bg-muted/50 transition-colors ${selectedDeliveries.includes(delivery.id) ? 'bg-muted/50' : ''}`}
+                    className={`cursor-pointer hover:bg-muted/50 transition-colors ${selectedDeliveries.includes(delivery.id) ? 'bg-muted/50' : ''} ${timeDisplay.urgent && delivery.status === 'pending' ? 'bg-orange-50/50 dark:bg-orange-950/10' : ''}`}
                     onClick={(e) => {
-                      // Don't trigger if clicking on checkbox or action menu
                       if ((e.target as HTMLElement).closest('button, input[type="checkbox"]')) {
                         return;
                       }
@@ -2330,85 +2301,74 @@ export default function DispatchPage() {
                         onCheckedChange={() => handleSelectDelivery(delivery.id)}
                       />
                     </TableCell>
-                    <TableCell className="font-mono font-medium">
+                    <TableCell className="font-mono text-xs font-medium">
                       <div className="flex items-center gap-1.5">
                         {delivery.tracking_number}
+                        {delivery.is_multi_stop && (
+                          <span title={`${delivery.total_stops} stops`} className="text-indigo-600">
+                            <Package className="h-3 w-3" />
+                          </span>
+                        )}
                         {delivery.is_scheduled && (
                           <span title="Scheduled delivery">
-                            <Calendar className="h-3.5 w-3.5 text-blue-500" />
+                            <Calendar className="h-3 w-3 text-blue-500" />
                           </span>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>{getStatusBadge(delivery.status)}</TableCell>
                     <TableCell>
-                      {delivery.payment_status ? (
-                        <Badge
-                          variant="outline"
-                          className={`text-xs ${
-                            delivery.payment_status === 'paid'
-                              ? 'border-green-500 text-green-700 bg-green-50 dark:bg-green-950/30'
-                              : delivery.payment_status === 'pending'
-                              ? 'border-yellow-500 text-yellow-700 bg-yellow-50 dark:bg-yellow-950/30'
-                              : delivery.payment_status === 'failed'
-                              ? 'border-red-500 text-red-700 bg-red-50 dark:bg-red-950/30'
-                              : 'border-gray-300 text-gray-500'
-                          }`}
-                        >
-                          {delivery.payment_status === 'paid' ? '✅ Paid' :
-                           delivery.payment_status === 'pending' ? '⏳ Pending' :
-                           delivery.payment_status === 'failed' ? '❌ Failed' :
-                           delivery.payment_status}
-                        </Badge>
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-start gap-1.5">
+                          <div className="h-4 w-4 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                            <div className="h-1.5 w-1.5 rounded-full bg-green-600" />
+                          </div>
+                          <span className="text-sm truncate max-w-[250px]" title={delivery.pickup_address}>{delivery.pickup_address}</span>
+                        </div>
+                        <div className="flex items-start gap-1.5">
+                          <div className="h-4 w-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                            <div className="h-1.5 w-1.5 rounded-full bg-red-600" />
+                          </div>
+                          {delivery.is_multi_stop
+                            ? <span className="text-sm font-medium text-indigo-600">{delivery.total_stops ?? '?'} stops</span>
+                            : <span className="text-sm truncate max-w-[250px]" title={delivery.delivery_address}>{delivery.delivery_address}</span>
+                          }
+                        </div>
+                        {delivery.delivery_contact_name && (
+                          <p className="text-xs text-muted-foreground pl-[22px] truncate">{delivery.delivery_contact_name} · {delivery.delivery_contact_phone || ''}</p>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {driverName ? (
+                        <div className="flex items-center gap-2">
+                          <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <UserCheck className="h-3 w-3 text-primary" />
+                          </div>
+                          <span className="text-sm font-medium truncate">{driverName}</span>
+                        </div>
                       ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
+                        <span className="text-xs text-muted-foreground italic">Unassigned</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {delivery.is_multi_stop ? (
-                          <>
-                            <Package className="h-3 w-3 mr-1" />
-                            Multi-Stop
-                          </>
-                        ) : (
-                          'Single'
+                      <div className="space-y-0.5">
+                        <p className="text-sm font-semibold">₱{(delivery.total_price || delivery.total_amount || 0).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">{(delivery.distance_km || 0).toFixed(1)} km</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-0.5">
+                        <p className={`text-xs font-medium ${timeDisplay.urgent ? 'text-orange-600 dark:text-orange-400' : 'text-muted-foreground'}`}>
+                          {timeDisplay.label}
+                        </p>
+                        {delivery.is_scheduled && delivery.scheduled_pickup_time && (
+                          <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                            <Clock className="h-2.5 w-2.5" />
+                            {format(new Date(delivery.scheduled_pickup_time), 'h:mm a')}
+                          </p>
                         )}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[150px] truncate text-sm">
-                      <div className="flex items-center gap-1">
-                        <MapPin className="h-3 w-3 text-green-600 flex-shrink-0" />
-                        {delivery.pickup_address}
                       </div>
-                    </TableCell>
-                    <TableCell className="max-w-[150px] truncate text-sm">
-                      <div className="flex items-center gap-1">
-                        <Navigation className="h-3 w-3 text-red-600 flex-shrink-0" />
-                        {delivery.is_multi_stop
-                          ? <span className="text-indigo-600 font-medium">{delivery.total_stops ?? '?'} stops</span>
-                          : delivery.delivery_address}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {delivery.delivery_contact_name ? (
-                        <div>
-                          <p className="font-medium leading-tight">{delivery.delivery_contact_name}</p>
-                          <p className="text-xs text-muted-foreground">{delivery.delivery_contact_phone || '—'}</p>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>{(delivery.distance_km || 0).toFixed(1)} km</TableCell>
-                    <TableCell className="font-semibold">₱{delivery.total_price || 0}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {delivery.estimated_duration
-                        ? <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatDuration(delivery.estimated_duration)}</span>
-                        : '—'}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {new Date(delivery.created_at).toLocaleDateString()}
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
@@ -2440,16 +2400,18 @@ export default function DispatchPage() {
                               Copy Per-Stop Links…
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setSelectedDeliveries([delivery.id]);
-                              handleAssign();
-                            }}
-                          >
-                            <UserCheck className="h-4 w-4 mr-2" />
-                            Assign Driver
-                          </DropdownMenuItem>
-                          {delivery.driver_id && (
+                          {!['delivered', 'cancelled'].includes(delivery.status) && (
+                            <DropdownMenuItem
+                              onClick={() => {
+                                setSelectedDeliveries([delivery.id]);
+                                handleAssign();
+                              }}
+                            >
+                              <UserCheck className="h-4 w-4 mr-2" />
+                              Assign Driver
+                            </DropdownMenuItem>
+                          )}
+                          {delivery.driver_id && !['delivered', 'cancelled'].includes(delivery.status) && (
                             <DropdownMenuItem
                               onClick={() => handleReassign(delivery)}
                             >
@@ -2482,7 +2444,8 @@ export default function DispatchPage() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -3352,27 +3315,29 @@ export default function DispatchPage() {
                     Edit Details
                   </Button>
                 )}
-                {selectedDeliveryForView?.driver_id ? (
-                  <Button
-                    variant="outline"
-                    onClick={() => handleReassign(selectedDeliveryForView!)}
-                    className="w-full sm:w-auto border-orange-400 text-orange-600 hover:bg-orange-50"
-                  >
-                    <RotateCcw className="h-4 w-4 mr-2" />
-                    Reassign Driver
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => {
-                      setSelectedDeliveries([selectedDeliveryForView!.id]);
-                      setShowDetailsPanel(false);
-                      handleAssign();
-                    }}
-                    className="w-full sm:w-auto"
-                  >
-                    <UserCheck className="h-4 w-4 mr-2" />
-                    Assign Driver
-                  </Button>
+                {selectedDeliveryForView && !['delivered', 'cancelled'].includes(selectedDeliveryForView.status) && (
+                  selectedDeliveryForView.driver_id ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => handleReassign(selectedDeliveryForView!)}
+                      className="w-full sm:w-auto border-orange-400 text-orange-600 hover:bg-orange-50"
+                    >
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Reassign Driver
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => {
+                        setSelectedDeliveries([selectedDeliveryForView!.id]);
+                        setShowDetailsPanel(false);
+                        handleAssign();
+                      }}
+                      className="w-full sm:w-auto"
+                    >
+                      <UserCheck className="h-4 w-4 mr-2" />
+                      Assign Driver
+                    </Button>
+                  )
                 )}
               </>
             )}
