@@ -100,6 +100,10 @@ import {
   ImageIcon,
   Map as MapIcon,
   List,
+  AlertTriangle,
+  Route,
+  Timer,
+  Wallet,
 } from 'lucide-react';
 import { GooglePlacesAutocomplete } from '@/components/google-places-autocomplete';
 import { GoogleMapsLoader } from '@/components/google-maps-loader';
@@ -277,6 +281,26 @@ export default function DispatchPage() {
   const [selectedManifest, setSelectedManifest] = useState<any | null>(null);
   const [manifestItems, setManifestItems] = useState<any[]>([]);
   const [loadingManifestItems, setLoadingManifestItems] = useState(false);
+
+  // Route Optimization state
+  const [showRouteOptimizationModal, setShowRouteOptimizationModal] = useState(false);
+  const [optimizingRoutes, setOptimizingRoutes] = useState(false);
+  const [routeOptimizationResult, setRouteOptimizationResult] = useState<any>(null);
+  const [optimizationMode, setOptimizationMode] = useState<'single_driver' | 'multi_driver' | 'balanced'>('balanced');
+  const [selectedOptDrivers, setSelectedOptDrivers] = useState<string[]>([]);
+
+  // Failed Delivery state
+  const [showFailedDeliveryDialog, setShowFailedDeliveryDialog] = useState(false);
+  const [failedDeliveryTarget, setFailedDeliveryTarget] = useState<Delivery | null>(null);
+  const [failureCategory, setFailureCategory] = useState<string>('no_one_home');
+  const [failureNotes, setFailureNotes] = useState('');
+  const [submittingFailure, setSubmittingFailure] = useState(false);
+
+  // Reschedule state
+  const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
+  const [rescheduleTarget, setRescheduleTarget] = useState<Delivery | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState<Date | undefined>(undefined);
+  const [submittingReschedule, setSubmittingReschedule] = useState(false);
 
   useEffect(() => {
     if (!userLoading && businessId) {
@@ -1261,6 +1285,237 @@ export default function DispatchPage() {
     }
   };
 
+  // ── Failed Delivery Handlers ──────────────────────────
+  const handleReportFailed = (delivery: Delivery) => {
+    setFailedDeliveryTarget(delivery);
+    setFailureCategory('no_one_home');
+    setFailureNotes('');
+    setShowFailedDeliveryDialog(true);
+  };
+
+  const confirmReportFailed = async () => {
+    if (!failedDeliveryTarget) return;
+    setSubmittingFailure(true);
+    try {
+      // Get current attempt count
+      const currentAttempts = (failedDeliveryTarget as any).failed_attempt_count || 0;
+      const newAttemptNumber = currentAttempts + 1;
+
+      // Insert delivery attempt record
+      const { error: attemptError } = await supabase
+        .from('delivery_attempts')
+        .insert({
+          delivery_id: failedDeliveryTarget.id,
+          attempt_number: newAttemptNumber,
+          driver_id: failedDeliveryTarget.driver_id,
+          status: 'failed',
+          failure_reason: failureNotes || failureCategory,
+          failure_category: failureCategory,
+          notes: failureNotes,
+          resolution: 'pending',
+        });
+
+      if (attemptError) throw attemptError;
+
+      // Update delivery status
+      const { error: updateError } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'failed_attempt',
+          failed_attempt_count: newAttemptNumber,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', failedDeliveryTarget.id);
+
+      if (updateError) throw updateError;
+
+      // Update local state
+      setDeliveries(prev =>
+        prev.map(d =>
+          d.id === failedDeliveryTarget.id
+            ? { ...d, status: 'failed_attempt', updated_at: new Date().toISOString() }
+            : d
+        )
+      );
+
+      toast({ title: '⚠️ Failed Attempt Reported', description: `Attempt #${newAttemptNumber} recorded for ${failedDeliveryTarget.tracking_number || failedDeliveryTarget.id.substring(0, 8)}.` });
+      setShowFailedDeliveryDialog(false);
+      setFailedDeliveryTarget(null);
+    } catch (error) {
+      console.error('❌ Error reporting failed attempt:', error);
+      toast({ title: 'Error', description: (error as any).message, variant: 'destructive' });
+    } finally {
+      setSubmittingFailure(false);
+    }
+  };
+
+  const handleReschedule = (delivery: Delivery) => {
+    setRescheduleTarget(delivery);
+    setRescheduleDate(undefined);
+    setShowRescheduleDialog(true);
+  };
+
+  const confirmReschedule = async () => {
+    if (!rescheduleTarget || !rescheduleDate) return;
+    setSubmittingReschedule(true);
+    try {
+      // Update the latest delivery attempt resolution
+      await supabase
+        .from('delivery_attempts')
+        .update({ resolution: 'rescheduled', rescheduled_to: rescheduleDate.toISOString(), resolved_at: new Date().toISOString() })
+        .eq('delivery_id', rescheduleTarget.id)
+        .eq('resolution', 'pending')
+        .order('attempt_number', { ascending: false })
+        .limit(1);
+
+      // Update delivery — set back to pending with new scheduled time
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'pending',
+          scheduled_pickup_time: rescheduleDate.toISOString(),
+          is_scheduled: true,
+          driver_id: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', rescheduleTarget.id);
+
+      if (error) throw error;
+
+      setDeliveries(prev =>
+        prev.map(d =>
+          d.id === rescheduleTarget.id
+            ? { ...d, status: 'pending', scheduled_pickup_time: rescheduleDate.toISOString(), driver_id: undefined, updated_at: new Date().toISOString() }
+            : d
+        )
+      );
+
+      toast({ title: '📅 Rescheduled', description: `Delivery rescheduled to ${format(rescheduleDate, 'MMM d, yyyy h:mm a')}.` });
+      setShowRescheduleDialog(false);
+      setRescheduleTarget(null);
+    } catch (error) {
+      console.error('❌ Error rescheduling:', error);
+      toast({ title: 'Reschedule failed', description: (error as any).message, variant: 'destructive' });
+    } finally {
+      setSubmittingReschedule(false);
+    }
+  };
+
+  const handleReturnToSender = async (delivery: Delivery) => {
+    try {
+      // Update the latest attempt resolution
+      await supabase
+        .from('delivery_attempts')
+        .update({ resolution: 'returned_to_sender', resolved_at: new Date().toISOString() })
+        .eq('delivery_id', delivery.id)
+        .eq('resolution', 'pending')
+        .order('attempt_number', { ascending: false })
+        .limit(1);
+
+      // Update delivery status to failed (final)
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'failed',
+          delivery_notes: `${delivery.delivery_notes || ''}\n[Return to Sender - ${new Date().toLocaleString()}]`.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', delivery.id);
+
+      if (error) throw error;
+
+      setDeliveries(prev =>
+        prev.map(d =>
+          d.id === delivery.id
+            ? { ...d, status: 'failed', updated_at: new Date().toISOString() }
+            : d
+        )
+      );
+
+      toast({ title: '↩️ Return to Sender', description: `Delivery ${delivery.tracking_number || delivery.id.substring(0, 8)} marked for return.` });
+    } catch (error) {
+      console.error('❌ Error returning to sender:', error);
+      toast({ title: 'Error', description: (error as any).message, variant: 'destructive' });
+    }
+  };
+
+  // ── Route Optimization Handler ────────────────────────
+  const handleOptimizeRoutes = () => {
+    setRouteOptimizationResult(null);
+    setOptimizationMode('balanced');
+    setSelectedOptDrivers([]);
+    setShowRouteOptimizationModal(true);
+  };
+
+  const runRouteOptimization = async () => {
+    setOptimizingRoutes(true);
+    try {
+      // Use selected deliveries, or all pending/assigned ones
+      let deliveryIds = selectedDeliveries.length > 0
+        ? selectedDeliveries
+        : deliveries.filter(d => ['pending', 'driver_assigned'].includes(d.status)).map(d => d.id);
+
+      if (deliveryIds.length < 2) {
+        toast({ title: 'Not enough deliveries', description: 'Select at least 2 deliveries to optimize.', variant: 'destructive' });
+        setOptimizingRoutes(false);
+        return;
+      }
+
+      // Use selected drivers, or all online drivers
+      const driverIds = selectedOptDrivers.length > 0
+        ? selectedOptDrivers
+        : drivers.filter(d => d.is_online).map(d => d.id);
+
+      if (driverIds.length === 0) {
+        toast({ title: 'No drivers available', description: 'No online drivers found for route optimization.', variant: 'destructive' });
+        setOptimizingRoutes(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('optimize-route', {
+        body: {
+          delivery_ids: deliveryIds,
+          driver_ids: driverIds,
+          business_id: businessId,
+          optimization_mode: optimizationMode,
+        },
+      });
+
+      if (error) throw error;
+      setRouteOptimizationResult(data);
+      toast({ title: '🗺️ Routes Optimized', description: `${data.total_deliveries} deliveries across ${data.total_drivers} driver(s). ${data.total_distance_km?.toFixed(1)}km total.` });
+    } catch (error) {
+      console.error('❌ Route optimization error:', error);
+      toast({ title: 'Optimization failed', description: (error as any).message, variant: 'destructive' });
+    } finally {
+      setOptimizingRoutes(false);
+    }
+  };
+
+  const assignOptimizedRoutes = async () => {
+    if (!routeOptimizationResult?.driver_routes) return;
+    try {
+      let assignedCount = 0;
+      for (const driverRoute of routeOptimizationResult.driver_routes) {
+        for (const delivery of driverRoute.deliveries) {
+          const { error } = await supabase
+            .from('deliveries')
+            .update({ driver_id: driverRoute.driver_id, status: 'driver_assigned', updated_at: new Date().toISOString() })
+            .eq('id', delivery.delivery_id);
+          if (!error) assignedCount++;
+        }
+      }
+
+      toast({ title: '✅ Routes Assigned', description: `${assignedCount} deliveries assigned to ${routeOptimizationResult.driver_routes.length} drivers.` });
+      setShowRouteOptimizationModal(false);
+      setRouteOptimizationResult(null);
+      fetchData(); // Refresh data
+    } catch (error) {
+      console.error('❌ Error assigning routes:', error);
+      toast({ title: 'Assignment failed', description: (error as any).message, variant: 'destructive' });
+    }
+  };
+
   const handleViewDetails = async (delivery: Delivery) => {
     setSelectedDeliveryForView(delivery);
     setEditFormData(delivery);
@@ -1909,13 +2164,23 @@ export default function DispatchPage() {
         label: 'Cancelled',
         icon: AlertCircle,
       },
+      failed: {
+        variant: 'destructive',
+        label: 'Failed',
+        icon: AlertCircle,
+      },
+      failed_attempt: {
+        variant: 'outline',
+        label: 'Failed Attempt',
+        icon: AlertTriangle,
+      },
     };
 
     const config = variants[status] || variants.pending;
     const Icon = config.icon;
 
     return (
-      <Badge variant={config.variant} className="flex items-center gap-1">
+      <Badge variant={config.variant} className={`flex items-center gap-1 ${status === 'failed_attempt' ? 'border-orange-400 text-orange-600' : ''}`}>
         <Icon className="h-3 w-3" />
         {config.label}
       </Badge>
@@ -1938,6 +2203,8 @@ export default function DispatchPage() {
         matchesStatus = delivery.status === 'delivered';
       } else if (statusFilter === 'cancelled') {
         matchesStatus = delivery.status === 'cancelled';
+      } else if (statusFilter === 'failed_attempt') {
+        matchesStatus = ['failed_attempt', 'failed'].includes(delivery.status);
       } else {
         matchesStatus = delivery.status === statusFilter;
       }
@@ -2062,6 +2329,10 @@ export default function DispatchPage() {
             <Upload className="h-4 w-4 mr-2" />
             Import CSV
           </Button>
+          <Button variant="outline" className="border-blue-300 text-blue-600 hover:bg-blue-50" onClick={() => setShowRouteOptimizationModal(true)}>
+            <Route className="h-4 w-4 mr-2" />
+            Optimize Routes
+          </Button>
           <Button onClick={() => router.push('/business/orders')}>
             <Package className="h-4 w-4 mr-2" />
             Create Delivery
@@ -2131,6 +2402,10 @@ export default function DispatchPage() {
               <Button variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={handleBatchCancel}>
                 <Ban className="h-4 w-4 mr-2" />
                 Cancel Selected
+              </Button>
+              <Button variant="outline" className="text-blue-600 border-blue-300 hover:bg-blue-50" onClick={handleOptimizeRoutes}>
+                <Route className="h-4 w-4 mr-2" />
+                Optimize Routes
               </Button>
               <Button onClick={handleAssign}>
                 <UserCheck className="h-4 w-4 mr-2" />
@@ -2229,6 +2504,7 @@ export default function DispatchPage() {
                 <TabsTrigger value="driver_assigned">Assigned</TabsTrigger>
                 <TabsTrigger value="in_transit">In Transit</TabsTrigger>
                 <TabsTrigger value="delivered">Delivered</TabsTrigger>
+                <TabsTrigger value="failed_attempt">Failed</TabsTrigger>
                 <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
               </TabsList>
             </Tabs>
@@ -2427,6 +2703,27 @@ export default function DispatchPage() {
                               <Edit className="h-4 w-4 mr-2" />
                               Edit Details
                             </DropdownMenuItem>
+                          )}
+                          {!['delivered', 'cancelled'].includes(delivery.status) && delivery.driver_id && (
+                            <DropdownMenuItem
+                              onClick={() => handleReportFailed(delivery)}
+                              className="text-orange-600"
+                            >
+                              <AlertTriangle className="h-4 w-4 mr-2" />
+                              Report Failed Attempt
+                            </DropdownMenuItem>
+                          )}
+                          {delivery.status === 'failed_attempt' && (
+                            <>
+                              <DropdownMenuItem onClick={() => handleReschedule(delivery)}>
+                                <Calendar className="h-4 w-4 mr-2" />
+                                Reschedule Delivery
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleReturnToSender(delivery)}>
+                                <RotateCcw className="h-4 w-4 mr-2" />
+                                Return to Sender
+                              </DropdownMenuItem>
+                            </>
                           )}
                           {!['delivered', 'cancelled'].includes(delivery.status) && (
                             <>
@@ -3316,28 +3613,60 @@ export default function DispatchPage() {
                   </Button>
                 )}
                 {selectedDeliveryForView && !['delivered', 'cancelled'].includes(selectedDeliveryForView.status) && (
-                  selectedDeliveryForView.driver_id ? (
-                    <Button
-                      variant="outline"
-                      onClick={() => handleReassign(selectedDeliveryForView!)}
-                      className="w-full sm:w-auto border-orange-400 text-orange-600 hover:bg-orange-50"
-                    >
-                      <RotateCcw className="h-4 w-4 mr-2" />
-                      Reassign Driver
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={() => {
-                        setSelectedDeliveries([selectedDeliveryForView!.id]);
-                        setShowDetailsPanel(false);
-                        handleAssign();
-                      }}
-                      className="w-full sm:w-auto"
-                    >
-                      <UserCheck className="h-4 w-4 mr-2" />
-                      Assign Driver
-                    </Button>
-                  )
+                  <>
+                    {selectedDeliveryForView.driver_id && !['failed_attempt'].includes(selectedDeliveryForView.status) && (
+                      <Button
+                        variant="outline"
+                        onClick={() => handleReportFailed(selectedDeliveryForView!)}
+                        className="w-full sm:w-auto border-orange-400 text-orange-600 hover:bg-orange-50"
+                      >
+                        <AlertTriangle className="h-4 w-4 mr-2" />
+                        Report Failed
+                      </Button>
+                    )}
+                    {selectedDeliveryForView.status === 'failed_attempt' && (
+                      <>
+                        <Button
+                          variant="outline"
+                          onClick={() => handleReschedule(selectedDeliveryForView!)}
+                          className="w-full sm:w-auto border-blue-400 text-blue-600 hover:bg-blue-50"
+                        >
+                          <Calendar className="h-4 w-4 mr-2" />
+                          Reschedule
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => handleReturnToSender(selectedDeliveryForView!)}
+                          className="w-full sm:w-auto"
+                        >
+                          <RotateCcw className="h-4 w-4 mr-2" />
+                          Return to Sender
+                        </Button>
+                      </>
+                    )}
+                    {selectedDeliveryForView.driver_id ? (
+                      <Button
+                        variant="outline"
+                        onClick={() => handleReassign(selectedDeliveryForView!)}
+                        className="w-full sm:w-auto border-orange-400 text-orange-600 hover:bg-orange-50"
+                      >
+                        <RotateCcw className="h-4 w-4 mr-2" />
+                        Reassign Driver
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={() => {
+                          setSelectedDeliveries([selectedDeliveryForView!.id]);
+                          setShowDetailsPanel(false);
+                          handleAssign();
+                        }}
+                        className="w-full sm:w-auto"
+                      >
+                        <UserCheck className="h-4 w-4 mr-2" />
+                        Assign Driver
+                      </Button>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -3829,6 +4158,225 @@ export default function DispatchPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Failed Delivery Dialog */}
+      <Dialog open={showFailedDeliveryDialog} onOpenChange={setShowFailedDeliveryDialog}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-orange-500" />
+              Report Failed Delivery Attempt
+            </DialogTitle>
+            <DialogDescription>
+              Record a failed delivery attempt for {failedDeliveryTarget?.tracking_number || 'this delivery'}. The delivery will be marked as failed and can be rescheduled or returned.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>Failure Reason</Label>
+              <Select value={failureCategory} onValueChange={setFailureCategory}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="no_one_home">No One Home</SelectItem>
+                  <SelectItem value="wrong_address">Wrong Address</SelectItem>
+                  <SelectItem value="refused_delivery">Refused Delivery</SelectItem>
+                  <SelectItem value="damaged_package">Damaged Package</SelectItem>
+                  <SelectItem value="incomplete_address">Incomplete Address</SelectItem>
+                  <SelectItem value="restricted_area">Restricted Area</SelectItem>
+                  <SelectItem value="weather">Weather</SelectItem>
+                  <SelectItem value="vehicle_issue">Vehicle Issue</SelectItem>
+                  <SelectItem value="customer_requested_reschedule">Customer Requested Reschedule</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes (optional)</Label>
+              <Input
+                placeholder="Additional details about the failed attempt..."
+                value={failureNotes}
+                onChange={(e) => setFailureNotes(e.target.value)}
+              />
+            </div>
+            {failedDeliveryTarget && (
+              <div className="bg-muted/50 rounded-md p-3 text-xs space-y-1">
+                <p><span className="font-medium">Delivery:</span> {failedDeliveryTarget.tracking_number || failedDeliveryTarget.id.substring(0, 8)}</p>
+                <p><span className="font-medium">Address:</span> {failedDeliveryTarget.delivery_address}</p>
+                <p><span className="font-medium">Recipient:</span> {failedDeliveryTarget.delivery_contact_name || 'N/A'}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowFailedDeliveryDialog(false)} disabled={submittingFailure}>Cancel</Button>
+            <Button onClick={confirmReportFailed} disabled={submittingFailure} className="bg-orange-600 hover:bg-orange-700">
+              {submittingFailure ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Submitting...</> : <><AlertTriangle className="h-4 w-4 mr-2" />Report Failed</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reschedule Dialog */}
+      <Dialog open={showRescheduleDialog} onOpenChange={setShowRescheduleDialog}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5 text-blue-500" />
+              Reschedule Delivery
+            </DialogTitle>
+            <DialogDescription>
+              Select a new date for delivery {rescheduleTarget?.tracking_number || ''}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center py-4">
+            <CalendarPicker
+              mode="single"
+              selected={rescheduleDate}
+              onSelect={setRescheduleDate}
+              disabled={(date) => date < new Date()}
+              className="rounded-md border"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRescheduleDialog(false)} disabled={submittingReschedule}>Cancel</Button>
+            <Button onClick={confirmReschedule} disabled={!rescheduleDate || submittingReschedule}>
+              {submittingReschedule ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Rescheduling...</> : <><Calendar className="h-4 w-4 mr-2" />Reschedule</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Route Optimization Modal */}
+      <Dialog open={showRouteOptimizationModal} onOpenChange={setShowRouteOptimizationModal}>
+        <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Route className="h-5 w-5 text-blue-500" />
+              Route Optimization
+            </DialogTitle>
+            <DialogDescription>
+              Optimize delivery routes using AI-powered routing. {selectedDeliveries.length > 0 ? `${selectedDeliveries.length} deliveries selected.` : 'All pending deliveries will be optimized.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!routeOptimizationResult ? (
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label>Optimization Mode</Label>
+                <Select value={optimizationMode} onValueChange={(v: any) => setOptimizationMode(v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="single_driver">Single Driver — All to one driver</SelectItem>
+                    <SelectItem value="multi_driver">Multi Driver — Distribute evenly</SelectItem>
+                    <SelectItem value="balanced">Balanced — Smart distribution by proximity</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Available Drivers ({drivers.filter(d => d.is_online).length} online)</Label>
+                <div className="max-h-[200px] overflow-y-auto border rounded-md p-2 space-y-1">
+                  {drivers.filter(d => d.is_online).map(driver => (
+                    <label key={driver.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 cursor-pointer text-sm">
+                      <Checkbox
+                        checked={selectedOptDrivers.includes(driver.id)}
+                        onCheckedChange={(checked) => {
+                          setSelectedOptDrivers(prev =>
+                            checked ? [...prev, driver.id] : prev.filter(id => id !== driver.id)
+                          );
+                        }}
+                      />
+                      <span className="font-medium">{driver.full_name}</span>
+                      <span className="text-muted-foreground text-xs ml-auto">{driver.vehicle_model || 'N/A'}</span>
+                    </label>
+                  ))}
+                  {drivers.filter(d => d.is_online).length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">No online drivers available</p>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {selectedOptDrivers.length === 0 ? 'All online drivers will be considered' : `${selectedOptDrivers.length} driver(s) selected`}
+                </p>
+              </div>
+
+              <div className="bg-blue-50 dark:bg-blue-950/30 rounded-md p-3 text-xs space-y-1">
+                <p className="font-medium text-blue-700 dark:text-blue-400">📍 Optimization Summary</p>
+                <p>Deliveries: {selectedDeliveries.length > 0 ? selectedDeliveries.length : deliveries.filter(d => ['pending', 'driver_assigned'].includes(d.status)).length}</p>
+                <p>Drivers: {selectedOptDrivers.length > 0 ? selectedOptDrivers.length : drivers.filter(d => d.is_online).length}</p>
+                <p>Mode: {optimizationMode === 'single_driver' ? 'Single Driver' : optimizationMode === 'multi_driver' ? 'Multi Driver' : 'Balanced'}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              {/* Optimization Results */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-green-50 dark:bg-green-950/30 rounded-md p-3 text-center">
+                  <p className="text-lg font-bold text-green-700 dark:text-green-400">{routeOptimizationResult.total_deliveries}</p>
+                  <p className="text-xs text-muted-foreground">Deliveries</p>
+                </div>
+                <div className="bg-blue-50 dark:bg-blue-950/30 rounded-md p-3 text-center">
+                  <p className="text-lg font-bold text-blue-700 dark:text-blue-400">{routeOptimizationResult.total_distance_km?.toFixed(1)} km</p>
+                  <p className="text-xs text-muted-foreground">Total Distance</p>
+                </div>
+                <div className="bg-purple-50 dark:bg-purple-950/30 rounded-md p-3 text-center">
+                  <p className="text-lg font-bold text-purple-700 dark:text-purple-400">{routeOptimizationResult.total_duration_minutes?.toFixed(0)} min</p>
+                  <p className="text-xs text-muted-foreground">Est. Duration</p>
+                </div>
+              </div>
+
+              {/* Per-driver routes */}
+              <div className="space-y-2">
+                <Label>Driver Routes</Label>
+                {routeOptimizationResult.driver_routes?.map((route: any, idx: number) => {
+                  const driverInfo = drivers.find(d => d.id === route.driver_id);
+                  return (
+                    <div key={idx} className="border rounded-md p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-sm">{driverInfo?.full_name || `Driver ${idx + 1}`}</span>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span>{route.deliveries?.length} stops</span>
+                          <span>{route.total_distance_km?.toFixed(1)} km</span>
+                          <span>{route.total_duration_minutes?.toFixed(0)} min</span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground space-y-0.5">
+                        {route.deliveries?.map((del: any, i: number) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <span className="font-mono text-[10px] bg-muted rounded px-1">{i + 1}</span>
+                            <span className="truncate">{del.address || del.delivery_id?.substring(0, 8)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            {!routeOptimizationResult ? (
+              <>
+                <Button variant="outline" onClick={() => setShowRouteOptimizationModal(false)}>Cancel</Button>
+                <Button onClick={runRouteOptimization} disabled={optimizingRoutes}>
+                  {optimizingRoutes ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Optimizing...</> : <><Route className="h-4 w-4 mr-2" />Optimize Routes</>}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setRouteOptimizationResult(null)}>Re-optimize</Button>
+                <Button onClick={assignOptimizedRoutes}>
+                  <UserCheck className="h-4 w-4 mr-2" />
+                  Assign All Routes
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

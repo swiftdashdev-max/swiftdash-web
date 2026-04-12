@@ -25,6 +25,8 @@ import {
   Navigation,
   Key,
   BookOpen,
+  Wallet,
+  Activity,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -49,6 +51,8 @@ const navigation = [
   { name: 'Tracking', href: '/business/tracking', icon: Navigation },
   { name: 'Fleet', href: '/business/fleet', icon: Truck },
   { name: 'Reports', href: '/business/reports', icon: BarChart3 },
+  { name: 'Analytics', href: '/business/analytics', icon: Activity },
+  { name: 'Earnings', href: '/business/driver-earnings', icon: Wallet },
 ];
 
 interface BusinessLayoutProps {
