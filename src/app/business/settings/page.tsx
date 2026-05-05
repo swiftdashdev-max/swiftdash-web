@@ -105,6 +105,10 @@ export default function SettingsPage() {
   const [logoDragOver, setLogoDragOver] = useState(false);
   const [cropFile, setCropFile] = useState<File | null>(null);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+  // Tracking input page customization
+  const [trackingHeadline, setTrackingHeadline] = useState('');
+  const [trackingSubtext, setTrackingSubtext] = useState('');
+  const [hidePoweredBy, setHidePoweredBy] = useState(false);
 
   // New customization fields
   const [accentColor, setAccentColor] = useState('#3b82f6');
@@ -279,6 +283,10 @@ export default function SettingsPage() {
           setBodyTextColor(settings.body_text_color || '');
           setCardBgColor(settings.card_bg_color || '');
           setDispatchRadiusKm(settings.dispatch_radius_km || 50);
+
+          setTrackingHeadline(settings.tracking_headline || '');
+          setTrackingSubtext(settings.tracking_subtext || '');
+          setHidePoweredBy(settings.hide_powered_by === true);
 
           // Storefront settings
           setStorefrontEnabled(data.storefront_enabled === true);
@@ -865,6 +873,9 @@ export default function SettingsPage() {
         show_driver_phone: showDriverPhone,
         show_pickup_address: showPickupAddress,
         dispatch_radius_km: dispatchRadiusKm,
+        tracking_headline: trackingHeadline || null,
+        tracking_subtext: trackingSubtext || null,
+        hide_powered_by: hidePoweredBy,
         tracking_page: {
           show_driver_info: showDriverInfo,
           show_support_contact: showSupportContact,
@@ -1222,6 +1233,53 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground">
                 Short subtitle shown below your business name in the tracking header
               </p>
+            </div>
+
+            <Separator />
+
+            {/* Tracking Input Page Text */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="w-5 h-5 rounded-md bg-teal-100 text-teal-600 flex items-center justify-center text-xs"><Truck className="h-3 w-3" /></span>
+                <p className="text-sm font-semibold">Tracking Input Page</p>
+              </div>
+              <p className="text-xs text-muted-foreground">Customize the text shown on your branded <code className="bg-muted px-1 rounded">track.yourdomain.com</code> page.</p>
+
+              <div className="space-y-2">
+                <Label htmlFor="tracking-headline">Hero Headline</Label>
+                <Input
+                  id="tracking-headline"
+                  value={trackingHeadline}
+                  onChange={(e) => setTrackingHeadline(e.target.value)}
+                  placeholder="Track Your Delivery"
+                  maxLength={60}
+                />
+                <p className="text-xs text-muted-foreground">The big bold heading on your tracking page. Default: "Track Your Delivery"</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="tracking-subtext">Subtext</Label>
+                <Textarea
+                  id="tracking-subtext"
+                  value={trackingSubtext}
+                  onChange={(e) => setTrackingSubtext(e.target.value)}
+                  placeholder="Enter your tracking number to get live updates on your delivery."
+                  rows={2}
+                  maxLength={160}
+                />
+                <p className="text-xs text-muted-foreground">Supporting text below the headline.</p>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
+                <div>
+                  <p className="text-sm font-medium">Hide &quot;Powered by SwiftDash&quot;</p>
+                  <p className="text-xs text-muted-foreground">Remove the SwiftDash branding from the footer</p>
+                </div>
+                <Switch
+                  checked={hidePoweredBy}
+                  onCheckedChange={setHidePoweredBy}
+                />
+              </div>
             </div>
 
             <Separator />

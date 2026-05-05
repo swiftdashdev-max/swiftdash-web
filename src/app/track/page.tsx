@@ -38,6 +38,9 @@ interface BusinessBranding {
     favicon_url?: string;
     logo_bg_transparent?: boolean;
     logo_size?: 'sm' | 'md' | 'lg' | 'xl';
+    tracking_headline?: string;
+    tracking_subtext?: string;
+    hide_powered_by?: boolean;
   };
 }
 
@@ -247,74 +250,125 @@ export default function TrackPage() {
 
   const brandColor = branding?.settings?.primary_color || '#3b82f6';
 
+  // Derive a darker shade for the hero gradient
+  function hexToRgb(hex: string) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return { r, g, b };
+  }
+  const rgb = brandColor.startsWith('#') && brandColor.length === 7 ? hexToRgb(brandColor) : { r: 59, g: 130, b: 246 };
+  const darkHero = `rgba(${Math.round(rgb.r * 0.35)}, ${Math.round(rgb.g * 0.35)}, ${Math.round(rgb.b * 0.35)}, 1)`;
+  const midHero  = `rgba(${Math.round(rgb.r * 0.55)}, ${Math.round(rgb.g * 0.55)}, ${Math.round(rgb.b * 0.55)}, 1)`;
+
   // ── Branded White-Label Tracking Page ─────────────────────────────────────
   if (branding) {
+    const trackingHeadline = branding.settings?.tracking_headline || 'Track Your Delivery';
+    const trackingSubtext  = branding.settings?.tracking_subtext  || 'Enter your tracking number to get live updates on your delivery.';
+    const hidePoweredBy    = branding.settings?.hide_powered_by === true;
+    const logoSizeClass    =
+      branding.settings?.logo_size === 'sm' ? 'h-8 max-w-[100px]' :
+      branding.settings?.logo_size === 'lg' ? 'h-16 max-w-[200px]' :
+      branding.settings?.logo_size === 'xl' ? 'h-20 max-w-[240px]' :
+      'h-12 max-w-[160px]'; // md default
+
     return (
-      <div className="min-h-screen flex flex-col" style={{ background: `linear-gradient(135deg, ${brandColor}08 0%, ${brandColor}03 100%)` }}>
-        {/* Branded Header */}
-        <header className="bg-white/90 backdrop-blur-md border-b sticky top-0 z-50">
-          <div className="max-w-2xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div className="min-h-screen flex flex-col font-sans antialiased">
+
+        {/* ── Full-bleed hero (top ~65% of viewport) ── */}
+        <div
+          className="relative flex flex-col"
+          style={{
+            background: `linear-gradient(145deg, ${darkHero} 0%, ${midHero} 50%, ${brandColor} 100%)`,
+            minHeight: '65vh',
+          }}
+        >
+          {/* Subtle texture overlay */}
+          <div className="absolute inset-0 pointer-events-none" style={{
+            backgroundImage: `radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06) 0%, transparent 60%),
+                              radial-gradient(circle at 80% 80%, rgba(255,255,255,0.04) 0%, transparent 50%)`,
+          }} />
+          {/* Decorative blobs */}
+          <div className="absolute -top-20 -right-20 w-80 h-80 rounded-full opacity-[0.07] bg-white pointer-events-none" />
+          <div className="absolute -bottom-10 -left-16 w-64 h-64 rounded-full opacity-[0.05] bg-white pointer-events-none" />
+
+          {/* Header — transparent, sits on hero */}
+          <header className="relative z-10 px-6 pt-6 pb-4">
+            <div className="max-w-3xl mx-auto flex items-center justify-between">
+              {/* Logo */}
+              <div className="flex items-center gap-3">
+                {branding.settings?.logo_url ? (
+                  <div className={`flex-shrink-0 ${branding.settings?.logo_bg_transparent ? '' : 'bg-white/10 backdrop-blur rounded-xl p-2'}`}>
+                    <img
+                      src={branding.settings.logo_url}
+                      alt={branding.business_name}
+                      className="h-9 w-auto max-w-[140px] object-contain block"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  </div>
+                ) : (
+                  <span className="text-white font-bold text-lg">{branding.business_name}</span>
+                )}
+              </div>
+              {/* Phone pill */}
+              {branding.business_phone && (
+                <a
+                  href={`tel:${branding.business_phone}`}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold text-white border border-white/25 bg-white/10 backdrop-blur hover:bg-white/20 transition-all"
+                >
+                  <Phone className="w-3 h-3" />
+                  {branding.business_phone}
+                </a>
+              )}
+            </div>
+          </header>
+
+          {/* Hero content */}
+          <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-center px-6 py-10">
+            {/* Big logo in hero */}
             {branding.settings?.logo_url && (
-              <div className={`flex-shrink-0 ${branding.settings?.logo_bg_transparent ? '' : 'bg-white rounded-lg p-1 shadow-sm'}`}>
+              <div className={`mb-8 ${branding.settings?.logo_bg_transparent ? '' : 'bg-white/10 backdrop-blur-sm rounded-2xl p-4 shadow-xl shadow-black/20'}`}>
                 <img
                   src={branding.settings.logo_url}
                   alt={branding.business_name}
-                  className={`w-auto object-contain block ${
-                    branding.settings.logo_size === 'sm' ? 'h-6 max-w-[80px]' :
-                    branding.settings.logo_size === 'lg' ? 'h-12 max-w-[160px]' :
-                    branding.settings.logo_size === 'xl' ? 'h-16 max-w-[200px]' :
-                    'h-8 max-w-[120px]'
-                  }`}
+                  className={`${logoSizeClass} w-auto object-contain block`}
                   onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                 />
               </div>
             )}
-            <div className="flex-1 min-w-0">
-              <h1 className="text-sm font-bold leading-tight truncate">{branding.business_name}</h1>
-              <p className="text-xs text-gray-400">{branding.settings?.tagline || 'Delivery Tracking'}</p>
-            </div>
-            {branding.business_phone && (
-              <a href={`tel:${branding.business_phone}`} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border hover:bg-gray-50 text-gray-600 transition-colors flex-shrink-0">
-                <Phone className="w-3 h-3" />
-                Call
-              </a>
-            )}
-          </div>
-        </header>
 
-        {/* Hero + Search */}
-        <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
-          <div className="max-w-xl w-full text-center">
-            <div
-              className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-medium mb-8 border backdrop-blur-sm"
-              style={{ backgroundColor: `${brandColor}10`, color: brandColor, borderColor: `${brandColor}20` }}
-            >
+            {/* Live badge */}
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold mb-6 bg-white/15 backdrop-blur border border-white/20 text-white">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: brandColor }} />
-                <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: brandColor }} />
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-60" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
               </span>
               Real-Time Tracking
             </div>
 
-            <h2 className="text-4xl md:text-5xl font-bold mb-4 tracking-tight text-gray-900">
-              Track Your{' '}
-              <span style={{ color: brandColor }}>Delivery</span>
-            </h2>
-            <p className="text-lg text-gray-500 mb-10 leading-relaxed">
-              Enter your tracking number to see your delivery&apos;s live location and status.
+            {/* Headline */}
+            <h1 className="text-4xl md:text-6xl font-bold text-white tracking-tight leading-tight mb-4 drop-shadow-sm">
+              {trackingHeadline}
+            </h1>
+
+            {/* Business name / tagline */}
+            <p className="text-white/70 text-base md:text-lg mb-2 font-medium">
+              {branding.settings?.tagline || branding.business_name}
+            </p>
+            <p className="text-white/50 text-sm mb-12 max-w-md">
+              {trackingSubtext}
             </p>
 
-            {/* Search Form */}
-            <form onSubmit={handleSubmit} className="relative max-w-lg mx-auto">
+            {/* ── Glassmorphism Search Box ── */}
+            <form onSubmit={handleSubmit} className="w-full max-w-lg">
               <div className="relative group">
+                {/* Glow ring */}
                 <div
-                  className="absolute -inset-1 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-500"
-                  style={{ background: `linear-gradient(to right, ${brandColor}30, ${brandColor}20, ${brandColor}30)` }}
+                  className="absolute -inset-[2px] rounded-2xl opacity-0 group-focus-within:opacity-100 transition-all duration-500 blur-sm"
+                  style={{ background: `linear-gradient(90deg, rgba(255,255,255,0.5), rgba(255,255,255,0.2), rgba(255,255,255,0.5))` }}
                 />
-                <div className="relative flex items-center bg-white border border-gray-200 rounded-xl shadow-xl shadow-black/5 overflow-hidden focus-within:border-opacity-50 transition-colors duration-300"
-                  style={{ ['--tw-ring-color' as string]: brandColor }}
-                >
-                  <div className="pl-5 text-gray-400">
+                <div className="relative flex items-center bg-white/15 backdrop-blur-md border border-white/30 rounded-2xl overflow-hidden shadow-2xl shadow-black/30 focus-within:bg-white/20 transition-all duration-300">
+                  <div className="pl-5 text-white/60">
                     <Search className="h-5 w-5" />
                   </div>
                   <input
@@ -323,14 +377,18 @@ export default function TrackPage() {
                     placeholder="SD-20250101-XXXXXXXX"
                     value={trackingNumber}
                     onChange={(e) => { setTrackingNumber(e.target.value); setError(''); }}
-                    className="flex-1 h-16 text-lg border-0 bg-transparent focus:outline-none focus:ring-0 placeholder:text-gray-300 px-4"
+                    className="flex-1 h-16 text-lg border-0 bg-transparent focus:outline-none focus:ring-0 text-white placeholder:text-white/40 px-4"
                   />
                   <div className="pr-3">
                     <button
                       type="submit"
                       disabled={isSearching}
-                      className="h-11 px-6 rounded-lg font-medium text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-60 flex items-center gap-2"
-                      style={{ backgroundColor: brandColor, boxShadow: `0 4px 14px ${brandColor}40` }}
+                      className="h-11 px-6 rounded-xl font-semibold text-sm transition-all hover:scale-105 active:scale-95 disabled:opacity-60 flex items-center gap-2 shadow-lg"
+                      style={{
+                        background: 'rgba(255,255,255,0.95)',
+                        color: brandColor,
+                        boxShadow: `0 4px 20px rgba(0,0,0,0.25)`,
+                      }}
                     >
                       {isSearching ? (
                         <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
@@ -350,36 +408,81 @@ export default function TrackPage() {
               {/* Error Message */}
               <AnimatePresence>
                 {error && (
-                  <motion.p
+                  <motion.div
                     initial={{ opacity: 0, y: -8 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -8 }}
-                    className="text-sm text-red-500 mt-3 text-center"
+                    className="mt-3 px-4 py-2.5 rounded-xl bg-red-500/20 backdrop-blur border border-red-400/30 text-sm text-white text-center"
                   >
                     {error}
-                  </motion.p>
+                  </motion.div>
                 )}
               </AnimatePresence>
 
-              <p className="text-xs text-gray-400 mt-4">
-                Your tracking number was sent to you via SMS or email when your delivery was booked.
+              <p className="text-xs text-white/40 mt-4 text-center">
+                Your tracking number was sent via SMS or email when your delivery was booked.
               </p>
             </form>
           </div>
-        </main>
 
-        {/* Powered by footer */}
-        <footer className="py-4 text-center text-xs text-gray-400 bg-white/50 border-t">
-          Powered by{' '}
-          <Link href="https://swiftdashdms.com" className="font-semibold text-gray-500 hover:underline" target="_blank" rel="noopener noreferrer">
-            SwiftDash
-          </Link>
-        </footer>
+          {/* Wave divider */}
+          <div className="relative z-10 w-full overflow-hidden leading-none" style={{ height: 60 }}>
+            <svg viewBox="0 0 1440 60" preserveAspectRatio="none" className="absolute bottom-0 w-full h-full">
+              <path d="M0,40 C360,70 1080,10 1440,40 L1440,60 L0,60 Z" fill="white" />
+            </svg>
+          </div>
+        </div>
+
+        {/* ── White bottom section ── */}
+        <div className="bg-white flex-1 flex flex-col">
+          {/* How it works — 3 steps */}
+          <div className="max-w-2xl mx-auto px-6 py-10 w-full">
+            <div className="grid grid-cols-3 gap-6">
+              {[
+                { icon: Package,      label: 'Enter Code',      desc: 'Paste your tracking number above' },
+                { icon: MapPin,       label: 'Live Location',   desc: 'See your driver on the map' },
+                { icon: CheckCircle2, label: 'Track Every Step', desc: 'Follow from pickup to delivery' },
+              ].map((step, i) => (
+                <div key={i} className="text-center">
+                  <div
+                    className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3 relative"
+                    style={{ backgroundColor: `${brandColor}12` }}
+                  >
+                    <step.icon className="h-5 w-5" style={{ color: brandColor }} />
+                    <div
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-white text-[10px] font-bold flex items-center justify-center shadow"
+                      style={{ backgroundColor: brandColor }}
+                    >
+                      {i + 1}
+                    </div>
+                  </div>
+                  <p className="text-sm font-semibold text-gray-800 mb-1">{step.label}</p>
+                  <p className="text-xs text-gray-400 leading-relaxed">{step.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Footer */}
+          {!hidePoweredBy && (
+            <footer className="py-5 text-center text-xs text-gray-300 border-t border-gray-100">
+              Powered by{' '}
+              <Link href="https://swiftdashdms.com" className="font-semibold text-gray-400 hover:text-gray-600 transition-colors" target="_blank" rel="noopener noreferrer">
+                SwiftDash
+              </Link>
+            </footer>
+          )}
+        </div>
       </div>
     );
   }
 
+
   // ── Default SwiftDash-branded Tracking Page ───────────────────────────────
+
   return (
     <div className="min-h-screen bg-background font-sans antialiased selection:bg-primary/20">
       {/* Header */}

@@ -22,6 +22,8 @@ serve(async (req) => {
   }
 
   try {
+    console.log(`🚀 [send-tracking-sms] Invoked with method: ${req.method}`);
+    
     // Environment variables
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -61,24 +63,33 @@ serve(async (req) => {
       const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       let testBusinessName = 'SwiftDash';
       let testSmsTemplate = '';
+      let testTrackingBaseUrl = appUrl;
       if (testBusinessId) {
         const { data: biz, error: bizErr } = await supabase
           .from('business_accounts')
-          .select('business_name, settings')
+          .select('business_name, settings, tracking_domain, custom_domain')
           .eq('id', testBusinessId)
           .single();
         console.log('📋 Business fetch result:', JSON.stringify(biz), 'error:', bizErr?.message);
+        
         if (biz?.business_name) testBusinessName = biz.business_name;
+        
         // settings is a JSONB column — parse if it came back as a string
         const rawSettings = typeof biz?.settings === 'string' ? JSON.parse(biz.settings) : (biz?.settings || {});
         if (rawSettings?.sms_template) testSmsTemplate = rawSettings.sms_template;
         console.log('📝 sms_template from DB:', testSmsTemplate || '(none)');
+
+        if (biz?.tracking_domain) {
+          testTrackingBaseUrl = `https://${biz.tracking_domain}`;
+        } else if (biz?.custom_domain) {
+          testTrackingBaseUrl = `https://${biz.custom_domain}`;
+        }
       } else {
         console.warn('⚠️ No testBusinessId provided — cannot fetch custom template');
       }
 
       const senderName = 'Airbridge';
-      const sampleTrackingUrl = `${appUrl}/track/SD-20260226-sample123`;
+      const sampleTrackingUrl = `${testTrackingBaseUrl}/track/SD-20260226-sample123`;
 
       // Use custom template if set, otherwise default — same logic as production
       let testMessage: string;
@@ -151,6 +162,7 @@ serve(async (req) => {
         business_accounts!inner(
           business_name,
           settings,
+          tracking_domain,
           custom_domain
         )
       `)
@@ -169,10 +181,12 @@ serve(async (req) => {
     const businessName = business?.business_name || 'SwiftDash';
     const settings = business?.settings || {};
 
-    // Use custom domain for tracking links when available
-    const trackingBaseUrl = business?.custom_domain
-      ? `https://${business.custom_domain}`
-      : appUrl;
+    // Use tracking domain if available, otherwise fallback to custom storefront domain, then default
+    const trackingBaseUrl = business?.tracking_domain
+      ? `https://${business.tracking_domain}`
+      : business?.custom_domain
+        ? `https://${business.custom_domain}`
+        : appUrl;
 
     // Check if SMS on booking is enabled (default: true)
     const smsEnabled = settings.sms_on_booking !== false;
