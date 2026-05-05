@@ -3,24 +3,17 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
+import { getServiceClient } from '@/lib/supabase-service';
 
 export async function GET(req: NextRequest) {
+  const start = Date.now();
   const auth = await authenticateApiKey(req.headers.get('x-api-key'));
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
 
   const { data, error } = await supabase
     .from('vehicle_types')
@@ -32,5 +25,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data });
+  return NextResponse.json({ data }, { headers: { 'x-response-time': `${Date.now() - start}ms` } });
 }

@@ -84,6 +84,44 @@ async function resolveCustomDomain(hostname: string): Promise<string | null> {
   }
 }
 
+// Resolve a custom tracking domain (e.g., track.welinc.com) → business slug
+const trackingDomainCache = new Map<string, { slug: string | null; timestamp: number }>();
+
+async function resolveTrackingDomain(hostname: string): Promise<string | null> {
+  const cached = trackingDomainCache.get(hostname);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.slug;
+  }
+
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseAnonKey) return null;
+
+    const url = `${supabaseUrl}/rest/v1/business_accounts?select=slug&tracking_domain=eq.${encodeURIComponent(hostname)}&storefront_enabled=eq.true&limit=1`;
+    const res = await fetch(url, {
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      trackingDomainCache.set(hostname, { slug: null, timestamp: Date.now() });
+      return null;
+    }
+
+    const rows = await res.json();
+    const slug = rows?.[0]?.slug || null;
+    trackingDomainCache.set(hostname, { slug, timestamp: Date.now() });
+    return slug;
+  } catch (err) {
+    console.error('Tracking domain lookup error:', err);
+    return null;
+  }
+}
+
 export async function middleware(request: NextRequest) {
   const host = request.headers.get('host') || '';
   const subdomain = getSubdomain(host);
@@ -101,8 +139,14 @@ export async function middleware(request: NextRequest) {
       path === '/favicon.ico'
     ) {
       // Fall through to normal handling
-    } else if (path.startsWith('/track')) {
-      // Let tracking pages pass through normally on subdomains
+    } else if (path === '/track' || path === '/track/') {
+      // Inject business slug for the track input page on subdomains
+      const url = request.nextUrl.clone();
+      const response = NextResponse.rewrite(url);
+      response.headers.set('x-business-slug', subdomain);
+      return response;
+    } else if (path.startsWith('/track/')) {
+      // Let tracking detail pages pass through (they resolve branding via delivery's business_id)
     } else {
       // Rewrite: welinc.swiftdashdms.com/ → /book/welinc
       url.pathname = `/book/${subdomain}${path === '/' ? '' : path}`;
@@ -125,12 +169,47 @@ export async function middleware(request: NextRequest) {
         path === '/favicon.ico'
       ) {
         // Fall through to normal handling
-      } else if (path.startsWith('/track')) {
-        // Let tracking pages pass through normally
+      } else if (path === '/track' || path === '/track/') {
+        // Inject business slug for the track input page on custom domains
+        const url = request.nextUrl.clone();
+        const response = NextResponse.rewrite(url);
+        response.headers.set('x-business-slug', slug);
+        return response;
+      } else if (path.startsWith('/track/')) {
+        // Let tracking detail pages pass through
       } else {
         // Rewrite: book.welinc.com/ → /book/welinc
         url.pathname = `/book/${slug}${path === '/' ? '' : path}`;
         return NextResponse.rewrite(url);
+      }
+    }
+  }
+
+  // ── Custom tracking domain routing ─────────────────────────────
+  // Check if this is a tracking_domain (e.g., track.welinc.com)
+  if (!subdomain && isCustomDomainCandidate(host)) {
+    const trackingSlug = await resolveTrackingDomain(hostname);
+    if (trackingSlug) {
+      const url = request.nextUrl.clone();
+      const path = url.pathname;
+
+      if (
+        path.startsWith('/_next') ||
+        path.startsWith('/api') ||
+        path === '/favicon.ico'
+      ) {
+        // Fall through
+      } else if (path === '/track' || path === '/track/' || path === '/') {
+        // Root of tracking domain → rewrite to /track with slug injected
+        url.pathname = '/track';
+        const response = NextResponse.rewrite(url);
+        response.headers.set('x-business-slug', trackingSlug);
+        return response;
+      } else if (path.startsWith('/track/')) {
+        // Tracking detail page — pass through with slug
+        const response = NextResponse.rewrite(url);
+        response.headers.set('x-business-slug', trackingSlug);
+        return response;
       }
     }
   }

@@ -166,6 +166,15 @@ export default function SettingsPage() {
   const [domainRemoving, setDomainRemoving] = useState(false);
   const [domainDnsRecords, setDomainDnsRecords] = useState<{ cname: string; txtName?: string; txtValue?: string } | null>(null);
 
+  // Tracking domain (separate from storefront custom_domain)
+  const [trackingDomain, setTrackingDomain] = useState('');
+  const [trackingDomainInput, setTrackingDomainInput] = useState('');
+  const [trackingDomainSaving, setTrackingDomainSaving] = useState(false);
+  const [trackingDomainRemoving, setTrackingDomainRemoving] = useState(false);
+  const [trackingDomainStatus, setTrackingDomainStatus] = useState<'none' | 'pending' | 'verified' | 'failed'>('none');
+  const [trackingDomainVerifying, setTrackingDomainVerifying] = useState(false);
+  const [trackingDomainDnsRecords, setTrackingDomainDnsRecords] = useState<{ cname: string; txtName?: string; txtValue?: string } | null>(null);
+
   const handleLogoFileChange = async (file: File) => {
     if (!businessId) return;
     if (!file.type.startsWith('image/')) {
@@ -228,7 +237,7 @@ export default function SettingsPage() {
         setLoading(true);
         const { data, error } = await supabase
           .from('business_accounts')
-          .select('business_name, business_phone, settings, slug, storefront_enabled, storefront_settings, custom_domain, domain_verification_status')
+          .select('business_name, business_phone, settings, slug, storefront_enabled, storefront_settings, custom_domain, domain_verification_status, tracking_domain, tracking_domain_verification_status')
           .eq('id', businessId)
           .single();
 
@@ -286,10 +295,15 @@ export default function SettingsPage() {
           setStorefrontBannerImageUrl(sf.banner_image_url || '');
           setStorefrontPaymentMethods(Array.isArray(sf.payment_methods) ? sf.payment_methods : ['cash', 'maya']);
 
-          // Custom domain
+          // Custom domain (storefront)
           setCustomDomain(data.custom_domain || '');
           setDomainInput(data.custom_domain || '');
           setDomainStatus((data.domain_verification_status as any) || 'none');
+
+          // Tracking domain
+          setTrackingDomain((data as any).tracking_domain || '');
+          setTrackingDomainInput((data as any).tracking_domain || '');
+          setTrackingDomainStatus((data as any).tracking_domain_verification_status || 'none');
 
           // Fetch fleet vehicles & pricing
           const [vtRes, bvpRes] = await Promise.all([
@@ -713,6 +727,102 @@ export default function SettingsPage() {
       toast({ title: 'Failed to remove domain', description: err.message, variant: 'destructive' });
     } finally {
       setDomainRemoving(false);
+    }
+  };
+
+  // ── Tracking Domain handlers ─────────────────────────────────
+  const handleTrackingDomainConnect = async () => {
+    if (!businessId || !trackingDomainInput.trim()) return;
+    try {
+      setTrackingDomainSaving(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast({ title: 'Not authenticated', description: 'Please sign in again', variant: 'destructive' });
+        return;
+      }
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action: 'add_tracking', domain: trackingDomainInput.trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to connect tracking domain');
+      setTrackingDomain(data.domain);
+      setTrackingDomainStatus('pending');
+      const vercel = data.vercel || {};
+      setTrackingDomainDnsRecords({
+        cname: vercel.cnames?.[0] || 'domains.swiftdashdms.com',
+        txtName: vercel.verification?.[0]?.domain ? `_vercel.${data.domain.split('.').slice(1).join('.')}` : undefined,
+        txtValue: vercel.verification?.[0]?.value || undefined,
+      });
+      toast({ title: 'Tracking domain connected! 🎉', description: 'Check the DNS instructions below to go live.' });
+    } catch (err: any) {
+      toast({ title: 'Failed to connect tracking domain', description: err.message, variant: 'destructive' });
+    } finally {
+      setTrackingDomainSaving(false);
+    }
+  };
+
+  const handleTrackingDomainVerify = async () => {
+    if (!businessId) return;
+    try {
+      setTrackingDomainVerifying(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action: 'verify_tracking' }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Verification failed');
+      setTrackingDomainStatus(data.status);
+      const vd = data.vercel_domain || {};
+      if (vd.cnames || vd.verification) {
+        setTrackingDomainDnsRecords({
+          cname: vd.cnames?.[0] || 'domains.swiftdashdms.com',
+          txtName: vd.verification?.[0]?.domain ? '_vercel' : undefined,
+          txtValue: vd.verification?.[0]?.value || undefined,
+        });
+      }
+      if (data.verified) {
+        toast({ title: 'Tracking domain verified! ✅', description: `${trackingDomain} is now active` });
+      } else {
+        toast({ title: 'Not verified yet', description: 'DNS changes can take up to 48 hours. Try again later.', variant: 'destructive' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Verification failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setTrackingDomainVerifying(false);
+    }
+  };
+
+  const handleTrackingDomainRemove = async () => {
+    if (!businessId) return;
+    if (!confirm('Remove tracking domain? The branded tracking page will no longer be accessible via this domain.')) return;
+    try {
+      setTrackingDomainRemoving(true);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const response = await fetch(`${supabaseUrl}/functions/v1/manage-custom-domain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action: 'remove_tracking' }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to remove tracking domain');
+      setTrackingDomain('');
+      setTrackingDomainInput('');
+      setTrackingDomainStatus('none');
+      setTrackingDomainDnsRecords(null);
+      toast({ title: 'Tracking domain removed', description: 'Custom tracking domain disconnected.' });
+    } catch (err: any) {
+      toast({ title: 'Failed to remove domain', description: err.message, variant: 'destructive' });
+    } finally {
+      setTrackingDomainRemoving(false);
     }
   };
 
@@ -1882,6 +1992,124 @@ export default function SettingsPage() {
                     disabled={domainSaving || !domainInput.trim()}
                   >
                     {domainSaving ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />Connecting...</>
+                    ) : (
+                      <><LinkIcon className="h-3.5 w-3.5 mr-1" />Connect</>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* ── Tracking Domain ── */}
+            <div className="rounded-lg border bg-gradient-to-r from-teal-50/50 to-cyan-50/50 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Truck className="h-4 w-4 text-teal-600" />
+                <p className="text-sm font-semibold">Tracking Domain</p>
+                {trackingDomainStatus === 'verified' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                    <CheckCircle2 className="h-3 w-3" />Active
+                  </span>
+                )}
+                {trackingDomainStatus === 'pending' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+                    <Loader2 className="h-3 w-3 animate-spin" />Pending DNS
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A separate domain for your branded tracking page (e.g., <code className="bg-white/70 px-1 rounded">track.yourbusiness.com</code>). Customers visiting this domain see your branded tracking input page.
+              </p>
+
+              {trackingDomain ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 p-2.5 bg-white rounded-md border">
+                    <Truck className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium flex-1">{trackingDomain}</span>
+                    {trackingDomainStatus === 'verified' ? (
+                      <span className="text-xs text-green-600 font-medium">✓ Live</span>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleTrackingDomainVerify}
+                        disabled={trackingDomainVerifying}
+                        className="h-7 text-xs"
+                      >
+                        {trackingDomainVerifying ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Check DNS
+                      </Button>
+                    )}
+                  </div>
+
+                  {trackingDomainStatus === 'pending' && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-3">
+                      <p className="text-xs font-semibold text-amber-800">⚡ DNS Setup Required</p>
+                      <p className="text-xs text-amber-700">Add these records in your domain registrar&apos;s DNS settings:</p>
+
+                      <div>
+                        <p className="text-xs font-medium text-amber-800 mb-1">1. CNAME record</p>
+                        <div className="grid grid-cols-[56px_1fr] gap-x-3 gap-y-1 text-xs font-mono bg-white rounded p-2 border">
+                          <span className="text-muted-foreground">Type</span>
+                          <span className="font-semibold">CNAME</span>
+                          <span className="text-muted-foreground">Name</span>
+                          <span className="font-semibold">{trackingDomain.split('.')[0]}</span>
+                          <span className="text-muted-foreground">Value</span>
+                          <span className="font-semibold text-blue-600 break-all">{trackingDomainDnsRecords?.cname || 'domains.swiftdashdms.com'}</span>
+                        </div>
+                      </div>
+
+                      {trackingDomainDnsRecords?.txtValue && (
+                        <div>
+                          <p className="text-xs font-medium text-amber-800 mb-1">2. TXT record <span className="font-normal text-amber-700">(ownership verification)</span></p>
+                          <div className="grid grid-cols-[56px_1fr] gap-x-3 gap-y-1 text-xs font-mono bg-white rounded p-2 border">
+                            <span className="text-muted-foreground">Type</span>
+                            <span className="font-semibold">TXT</span>
+                            <span className="text-muted-foreground">Name</span>
+                            <span className="font-semibold">{trackingDomainDnsRecords.txtName || '_vercel'}</span>
+                            <span className="text-muted-foreground">Value</span>
+                            <span className="font-semibold text-purple-600 break-all">{trackingDomainDnsRecords.txtValue}</span>
+                          </div>
+                          <p className="text-xs text-amber-600 mt-1">This proves you own the domain. You can remove it after verification.</p>
+                        </div>
+                      )}
+
+                      <p className="text-xs text-amber-600">DNS changes can take up to 48 hours. Click &quot;Check DNS&quot; once configured.</p>
+                    </div>
+                  )}
+
+                  {trackingDomainStatus === 'verified' && (
+                    <div className="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded-md p-2 border border-green-200">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>Your tracking page is live at <a href={`https://${trackingDomain}/track`} target="_blank" rel="noopener noreferrer" className="font-medium underline">{trackingDomain}/track</a></span>
+                    </div>
+                  )}
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleTrackingDomainRemove}
+                    disabled={trackingDomainRemoving}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 h-7 text-xs"
+                  >
+                    {trackingDomainRemoving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <X className="h-3 w-3 mr-1" />}
+                    Remove Tracking Domain
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={trackingDomainInput}
+                    onChange={(e) => setTrackingDomainInput(e.target.value.toLowerCase().trim())}
+                    placeholder="track.yourbusiness.com"
+                    className="flex-1 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={handleTrackingDomainConnect}
+                    disabled={trackingDomainSaving || !trackingDomainInput.trim()}
+                  >
+                    {trackingDomainSaving ? (
                       <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />Connecting...</>
                     ) : (
                       <><LinkIcon className="h-3.5 w-3.5 mr-1" />Connect</>

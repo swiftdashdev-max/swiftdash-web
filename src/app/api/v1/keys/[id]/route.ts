@@ -3,17 +3,10 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
+import { getServiceClient } from '@/lib/supabase-service';
+import { invalidateAuthCache } from '@/lib/api-auth';
 
 async function getSessionUser(): Promise<string | null> {
   const cookieStore = await cookies();
@@ -33,7 +26,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   if (!businessId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await ctx.params;
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
 
   const { data, error } = await supabase
     .from('business_api_keys')
@@ -44,5 +37,9 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     .single();
 
   if (error || !data) return NextResponse.json({ error: 'API key not found' }, { status: 404 });
+
+  // Clear auth cache so revoked keys are immediately rejected
+  invalidateAuthCache();
+
   return NextResponse.json({ data });
 }

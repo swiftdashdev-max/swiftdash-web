@@ -9,8 +9,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getServiceClient } from '@/lib/supabase-service';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { randomBytes } from 'crypto';
@@ -26,14 +26,6 @@ const ALLOWED_EVENTS = [
   'delivery.cancelled',
   'delivery.failed',
 ] as const;
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
 
 async function resolveBusinessId(req: NextRequest): Promise<string | null> {
   // 1. Try API key
@@ -63,7 +55,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
   const { data, error } = await supabase
     .from('business_webhooks')
     .select('id, url, events, is_active, description, created_at')
@@ -121,7 +113,7 @@ export async function POST(req: NextRequest) {
   }
 
   const secret = `whsec_${randomBytes(24).toString('base64url')}`;
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
 
   const { data, error } = await supabase
     .from('business_webhooks')

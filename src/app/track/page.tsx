@@ -16,11 +16,30 @@ import {
   ArrowRight,
   CheckCircle2,
   Truck,
+  Phone,
 } from 'lucide-react';
 import { Reveal, SlideIn, ScaleIn } from '@/components/animations';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { HoleBackground } from '@/components/animate-ui/components/backgrounds/hole';
 import { motion, AnimatePresence } from 'framer-motion';
+import { createClient } from '@/lib/supabase/client';
+
+const ROOT_DOMAIN = 'swiftdashdms.com';
+
+interface BusinessBranding {
+  id: string;
+  business_name: string;
+  business_phone: string | null;
+  slug: string;
+  settings: {
+    logo_url?: string;
+    primary_color?: string;
+    tagline?: string;
+    favicon_url?: string;
+    logo_bg_transparent?: boolean;
+    logo_size?: 'sm' | 'md' | 'lg' | 'xl';
+  };
+}
 
 export default function TrackPage() {
   const router = useRouter();
@@ -29,6 +48,75 @@ export default function TrackPage() {
   const [error, setError] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [branding, setBranding] = useState<BusinessBranding | null>(null);
+  const [brandingLoaded, setBrandingLoaded] = useState(false);
+  const supabase = createClient();
+
+  // Detect subdomain or custom tracking domain and fetch business branding
+  useEffect(() => {
+    async function detectBranding() {
+      try {
+        const hostname = window.location.hostname;
+
+        // Check for subdomain (e.g., welinc.swiftdashdms.com or welinc.localhost)
+        let slug: string | null = null;
+        if (hostname.endsWith(`.${ROOT_DOMAIN}`)) {
+          const sub = hostname.replace(`.${ROOT_DOMAIN}`, '');
+          if (sub && !['www', 'app', 'api', 'admin', 'staging', 'dev'].includes(sub)) {
+            slug = sub;
+          }
+        } else if (hostname.endsWith('.localhost')) {
+          const sub = hostname.replace('.localhost', '');
+          if (sub && !['www', 'app', 'api', 'admin'].includes(sub)) {
+            slug = sub;
+          }
+        }
+
+        if (slug) {
+          // Fetch by slug
+          const { data } = await supabase
+            .from('business_accounts')
+            .select('id, business_name, business_phone, slug, settings')
+            .eq('slug', slug)
+            .eq('storefront_enabled', true)
+            .single();
+          if (data) setBranding(data as BusinessBranding);
+        } else if (
+          hostname !== 'localhost' &&
+          !hostname.endsWith('.localhost') &&
+          hostname !== ROOT_DOMAIN &&
+          !hostname.endsWith(`.${ROOT_DOMAIN}`) &&
+          !hostname.endsWith('.vercel.app') &&
+          hostname.includes('.')
+        ) {
+          // Custom tracking domain — resolve by tracking_domain column
+          const { data } = await supabase
+            .from('business_accounts')
+            .select('id, business_name, business_phone, slug, settings')
+            .eq('tracking_domain', hostname)
+            .eq('storefront_enabled', true)
+            .single();
+          if (data) setBranding(data as BusinessBranding);
+        }
+      } catch {
+        // No branding — show default SwiftDash page
+      }
+      setBrandingLoaded(true);
+    }
+    detectBranding();
+  }, []);
+
+  // Dynamic page title and favicon for branded pages
+  useEffect(() => {
+    if (!branding) return;
+    document.title = `Track Your Delivery | ${branding.business_name}`;
+    if (branding.settings?.favicon_url) {
+      let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+      link.href = branding.settings.favicon_url;
+    }
+    return () => { document.title = 'Track Delivery | SwiftDash'; };
+  }, [branding]);
 
   // Auto-focus input on mount
   useEffect(() => {
@@ -76,7 +164,7 @@ export default function TrackPage() {
     return null; // Could not parse
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -101,10 +189,42 @@ export default function TrackPage() {
     }
 
     setIsSearching(true);
-    // Small delay for visual feedback
+
+    // On branded pages, validate the delivery belongs to this business
+    if (branding) {
+      try {
+        // Parse out parent tracking number (strip stop suffix)
+        const stopMatch = normalized.match(/^(.+)-(\d{1,2})$/);
+        const parentTracking = stopMatch ? stopMatch[1] : normalized;
+
+        const { data, error: fetchErr } = await supabase
+          .from('deliveries')
+          .select('business_id')
+          .ilike('tracking_number', parentTracking)
+          .maybeSingle();
+
+        if (fetchErr || !data) {
+          setError('We couldn\'t find a delivery with this tracking number. Please check and try again.');
+          setIsSearching(false);
+          return;
+        }
+
+        if (data.business_id !== branding.id) {
+          setError(`This tracking number doesn't belong to ${branding.business_name}. Please check your tracking number.`);
+          setIsSearching(false);
+          return;
+        }
+      } catch {
+        setError('Something went wrong. Please try again.');
+        setIsSearching(false);
+        return;
+      }
+    }
+
+    // Small delay for visual feedback then navigate
     setTimeout(() => {
       router.push(`/track/${encodeURIComponent(normalized)}`);
-    }, 400);
+    }, 300);
   };
 
   const trackingSteps = [
@@ -125,6 +245,141 @@ export default function TrackPage() {
     },
   ];
 
+  const brandColor = branding?.settings?.primary_color || '#3b82f6';
+
+  // ── Branded White-Label Tracking Page ─────────────────────────────────────
+  if (branding) {
+    return (
+      <div className="min-h-screen flex flex-col" style={{ background: `linear-gradient(135deg, ${brandColor}08 0%, ${brandColor}03 100%)` }}>
+        {/* Branded Header */}
+        <header className="bg-white/90 backdrop-blur-md border-b sticky top-0 z-50">
+          <div className="max-w-2xl mx-auto px-4 py-3 flex items-center gap-3">
+            {branding.settings?.logo_url && (
+              <div className={`flex-shrink-0 ${branding.settings?.logo_bg_transparent ? '' : 'bg-white rounded-lg p-1 shadow-sm'}`}>
+                <img
+                  src={branding.settings.logo_url}
+                  alt={branding.business_name}
+                  className={`w-auto object-contain block ${
+                    branding.settings.logo_size === 'sm' ? 'h-6 max-w-[80px]' :
+                    branding.settings.logo_size === 'lg' ? 'h-12 max-w-[160px]' :
+                    branding.settings.logo_size === 'xl' ? 'h-16 max-w-[200px]' :
+                    'h-8 max-w-[120px]'
+                  }`}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <h1 className="text-sm font-bold leading-tight truncate">{branding.business_name}</h1>
+              <p className="text-xs text-gray-400">{branding.settings?.tagline || 'Delivery Tracking'}</p>
+            </div>
+            {branding.business_phone && (
+              <a href={`tel:${branding.business_phone}`} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border hover:bg-gray-50 text-gray-600 transition-colors flex-shrink-0">
+                <Phone className="w-3 h-3" />
+                Call
+              </a>
+            )}
+          </div>
+        </header>
+
+        {/* Hero + Search */}
+        <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
+          <div className="max-w-xl w-full text-center">
+            <div
+              className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-medium mb-8 border backdrop-blur-sm"
+              style={{ backgroundColor: `${brandColor}10`, color: brandColor, borderColor: `${brandColor}20` }}
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: brandColor }} />
+                <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: brandColor }} />
+              </span>
+              Real-Time Tracking
+            </div>
+
+            <h2 className="text-4xl md:text-5xl font-bold mb-4 tracking-tight text-gray-900">
+              Track Your{' '}
+              <span style={{ color: brandColor }}>Delivery</span>
+            </h2>
+            <p className="text-lg text-gray-500 mb-10 leading-relaxed">
+              Enter your tracking number to see your delivery&apos;s live location and status.
+            </p>
+
+            {/* Search Form */}
+            <form onSubmit={handleSubmit} className="relative max-w-lg mx-auto">
+              <div className="relative group">
+                <div
+                  className="absolute -inset-1 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-500"
+                  style={{ background: `linear-gradient(to right, ${brandColor}30, ${brandColor}20, ${brandColor}30)` }}
+                />
+                <div className="relative flex items-center bg-white border border-gray-200 rounded-xl shadow-xl shadow-black/5 overflow-hidden focus-within:border-opacity-50 transition-colors duration-300"
+                  style={{ ['--tw-ring-color' as string]: brandColor }}
+                >
+                  <div className="pl-5 text-gray-400">
+                    <Search className="h-5 w-5" />
+                  </div>
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    placeholder="SD-20250101-XXXXXXXX"
+                    value={trackingNumber}
+                    onChange={(e) => { setTrackingNumber(e.target.value); setError(''); }}
+                    className="flex-1 h-16 text-lg border-0 bg-transparent focus:outline-none focus:ring-0 placeholder:text-gray-300 px-4"
+                  />
+                  <div className="pr-3">
+                    <button
+                      type="submit"
+                      disabled={isSearching}
+                      className="h-11 px-6 rounded-lg font-medium text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-60 flex items-center gap-2"
+                      style={{ backgroundColor: brandColor, boxShadow: `0 4px 14px ${brandColor}40` }}
+                    >
+                      {isSearching ? (
+                        <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
+                          <Truck className="h-5 w-5" />
+                        </motion.div>
+                      ) : (
+                        <>
+                          Track
+                          <ArrowRight className="h-4 w-4" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Error Message */}
+              <AnimatePresence>
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="text-sm text-red-500 mt-3 text-center"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+
+              <p className="text-xs text-gray-400 mt-4">
+                Your tracking number was sent to you via SMS or email when your delivery was booked.
+              </p>
+            </form>
+          </div>
+        </main>
+
+        {/* Powered by footer */}
+        <footer className="py-4 text-center text-xs text-gray-400 bg-white/50 border-t">
+          Powered by{' '}
+          <Link href="https://swiftdashdms.com" className="font-semibold text-gray-500 hover:underline" target="_blank" rel="noopener noreferrer">
+            SwiftDash
+          </Link>
+        </footer>
+      </div>
+    );
+  }
+
+  // ── Default SwiftDash-branded Tracking Page ───────────────────────────────
   return (
     <div className="min-h-screen bg-background font-sans antialiased selection:bg-primary/20">
       {/* Header */}

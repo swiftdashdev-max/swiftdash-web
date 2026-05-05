@@ -4,27 +4,20 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getServiceClient } from '@/lib/supabase-service';
 import { dispatchWebhook } from '@/lib/webhook-dispatcher';
 import { validateBody, DELIVERY_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
 
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
-
 // ── GET /api/v1/deliveries ────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
+  const start = Date.now();
   const auth = await authenticateApiKey(req.headers.get('x-api-key'));
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
   const { searchParams } = new URL(req.url);
 
   const status    = searchParams.get('status');
@@ -58,11 +51,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data, count, limit, offset });
+  return NextResponse.json(
+    { data, count, limit, offset },
+    { headers: { 'x-response-time': `${Date.now() - start}ms` } }
+  );
 }
 
 // ── POST /api/v1/deliveries ───────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
+  const start = Date.now();
   const auth = await authenticateApiKey(req.headers.get('x-api-key'));
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
@@ -81,7 +78,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(validationErrorResponse(validation.errors), { status: 400 });
   }
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
 
   // ── Validate vehicle type ────────────────────────────────────────────────
   const { data: vt, error: vtErr } = await supabase
@@ -154,7 +151,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     data: delivery,
     pricing: { base: basePrice, distance: distanceCost, subtotal, vat, total: totalPrice },
-  }, { status: 201 });
+  }, { status: 201, headers: { 'x-response-time': `${Date.now() - start}ms` } });
 }
 
 // ── Haversine fallback distance (no external API) ────────────────────────────

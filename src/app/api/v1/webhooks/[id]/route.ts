@@ -4,8 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { getServiceClient } from '@/lib/supabase-service';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { validateBody, WEBHOOK_UPDATE_RULES, validationErrorResponse } from '@/lib/api-validation';
@@ -20,14 +20,6 @@ const ALLOWED_EVENTS = [
   'delivery.cancelled',
   'delivery.failed',
 ] as const;
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
 
 async function resolveBusinessId(req: NextRequest): Promise<string | null> {
   const keyAuth = await authenticateApiKey(req.headers.get('x-api-key'));
@@ -79,7 +71,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (body.is_active   !== undefined) patch.is_active   = body.is_active;
   if (body.description !== undefined) patch.description = body.description;
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
   const { data, error } = await supabase
     .from('business_webhooks')
     .update(patch)
@@ -98,7 +90,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   if (!businessId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await ctx.params;
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
 
   const { error } = await supabase
     .from('business_webhooks')

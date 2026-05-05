@@ -4,19 +4,11 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { generateApiKey } from '@/lib/api-auth';
+import { getServiceClient } from '@/lib/supabase-service';
 import { validateBody, API_KEY_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
 
 async function getSessionUser(): Promise<string | null> {
   const cookieStore = await cookies();
@@ -34,7 +26,7 @@ export async function GET() {
   const businessId = await getSessionUser();
   if (!businessId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const supabase = serviceClient();
+  const supabase = getServiceClient();
   const { data, error } = await supabase
     .from('business_api_keys')
     .select('id, name, key_prefix, is_active, last_used_at, created_at, revoked_at')
