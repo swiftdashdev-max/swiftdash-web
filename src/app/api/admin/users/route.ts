@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
             primary_contact_email: email,
             primary_contact_phone: userData.phone_number,
             subscription_tier: 'starter',
-            account_status: 'active',
+            account_status: 'pending_approval',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           }])

@@ -88,7 +88,7 @@ serve(async (req) => {
         console.warn('⚠️ No testBusinessId provided — cannot fetch custom template');
       }
 
-      const senderName = 'Airbridge';
+      const senderName = rawSettings?.sms_sender_name || 'Airbridge';
       const sampleTrackingUrl = `${testTrackingBaseUrl}/track/SD-20260226-sample123`;
 
       // Use custom template if set, otherwise default — same logic as production
@@ -200,8 +200,8 @@ serve(async (req) => {
 
     const notifyPickup = settings.sms_notify_pickup === true;
     const customTemplate = settings.sms_template || '';
-    // Fixed registered Semaphore sender name
-    const senderName = 'Airbridge';
+    // Use custom sender name if set, otherwise Airbridge
+    const senderName = settings.sms_sender_name || 'Airbridge';
 
     // Helper: build SMS body from template or default
     const buildSmsBody = (name: string, trackingUrl: string): string => {

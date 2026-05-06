@@ -42,7 +42,7 @@ export default function LoginPage() {
       // Verify user is a business user (this is business-only login)
       const { data: profile, error: profileError } = await supabase
         .from('user_profiles')
-        .select('user_type')
+        .select('user_type, business_id')
         .eq('id', data.user.id)
         .single();
 
@@ -53,6 +53,23 @@ export default function LoginPage() {
       if (profile.user_type !== 'business') {
         await supabase.auth.signOut();
         throw new Error('This login is for business accounts only. Admins and CRM users should use their specific portals.');
+      }
+
+      if (profile.business_id) {
+        const { data: businessAccount, error: businessError } = await supabase
+          .from('business_accounts')
+          .select('account_status')
+          .eq('id', profile.business_id)
+          .single();
+
+        if (businessError) {
+           throw new Error('Failed to fetch business account details');
+        }
+
+        if (businessAccount.account_status === 'pending_approval') {
+          await supabase.auth.signOut();
+          throw new Error('Your business account is pending admin approval. You will be able to log in once an admin approves your registration.');
+        }
       }
 
       // Redirect to business dashboard
