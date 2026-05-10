@@ -17,7 +17,6 @@ import {
   Menu, 
   X,
   LogOut,
-  Bell,
   Search,
   User,
   Clock,
@@ -39,7 +38,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { createClient } from '@/lib/supabase/client';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useUserContext } from '@/lib/supabase/user-context';
@@ -114,7 +112,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
 
           {/* Centered Desktop Navigation */}
           <div className="hidden md:flex flex-1 justify-center max-w-3xl mx-4">
-            <nav className="flex items-center gap-4 lg:gap-6 text-sm font-medium overflow-x-auto">
+            <nav className="flex items-center gap-2 lg:gap-4 text-sm font-medium overflow-x-auto scrollbar-none">
               {navigation.map((item) => {
                 const isActive = currentPath === item.href;
                 return (
@@ -154,14 +152,6 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
             {/* Actions */}
             <div className="flex items-center space-x-1">
               <ThemeToggle />
-              
-              {/* Notifications */}
-              <Button variant="ghost" size="icon" className="relative h-9 w-9 shrink-0">
-                <Bell className="h-4 w-4" />
-                <Badge className="absolute top-1 right-1 h-4 w-4 flex items-center justify-center rounded-full p-0 text-xs">
-                  5
-                </Badge>
-              </Button>
 
               {/* User Menu */}
               <DropdownMenu>
