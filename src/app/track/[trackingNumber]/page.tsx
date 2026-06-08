@@ -811,7 +811,7 @@ export default function TrackingPage() {
             driverName={businessName}
             avatarUrl={businessLogo}
             heading={driverLocation.heading}
-            isOnline={true}
+            isOnline={!!driverConnected}
             lastUpdateSeconds={lastUpdateSeconds}
             speed={driverLocation.speed}
           />
@@ -847,7 +847,7 @@ export default function TrackingPage() {
           driverName={businessName}
           avatarUrl={businessLogo}
           heading={driverLocation.heading}
-          isOnline={true}
+          isOnline={!!driverConnected}
           lastUpdateSeconds={lastUpdateSeconds}
           speed={driverLocation.speed}
         />
