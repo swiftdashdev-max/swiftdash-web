@@ -117,6 +117,7 @@ interface DeliveryData {
     show_driver_phone?: boolean;
     show_pickup_address?: boolean;
     logo_size?: 'sm' | 'md' | 'lg' | 'xl';
+    status_labels?: Record<string, string>;
   };
 }
 
@@ -132,6 +133,7 @@ const STATUS_STEPS: StatusStep[] = [
   { key: 'pickup_arrived', label: 'Arriving at Pickup', icon: MapPin },
   { key: 'package_collected', label: 'Package Collected', icon: Package },
   { key: 'in_transit', label: 'On the Way', icon: Navigation },
+  { key: 'at_destination', label: 'Driver Arrived', icon: MapPin },
   { key: 'delivered', label: 'Delivered', icon: CheckCircle2 },
 ];
 
@@ -202,6 +204,7 @@ export default function TrackingPage() {
       pickup_arrived: 'Driver at pickup',
       package_collected: 'Package collected',
       in_transit: 'On the way',
+      at_destination: 'Driver arrived',
       delivered: 'Delivered',
     };
     const statusText = statusLabel[delivery?.status || ''] || 'In progress';
@@ -229,7 +232,7 @@ export default function TrackingPage() {
   const supabase = createClient();
 
   // Subscribe to driver location updates via Ably
-  const shouldTrackDriver = delivery?.status && ['driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit'].includes(delivery.status);
+  const shouldTrackDriver = delivery?.status && ['driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(delivery.status);
   const { location: driverLocation, isConnected: driverConnected } = useInterpolatedDriverLocation(
     shouldTrackDriver ? delivery?.id || null : null
   );
@@ -905,6 +908,11 @@ export default function TrackingPage() {
     return STATUS_STEPS.findIndex((step) => step.key === status);
   };
 
+  // Returns custom business label for a status key, falling back to the default
+  const getCustomStepLabel = (statusKey: string, defaultLabel: string): string => {
+    return delivery?.business_branding?.status_labels?.[statusKey] || defaultLabel;
+  };
+
   const getStatusBadge = (status: string) => {
     const colors: Record<string, string> = {
       pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
@@ -912,17 +920,19 @@ export default function TrackingPage() {
       pickup_arrived: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
       package_collected: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200',
       in_transit: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200',
+      at_destination: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
       delivered: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
       cancelled: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
       failed: 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200',
     };
 
-    const labels: Record<string, string> = {
+    const defaultLabels: Record<string, string> = {
       pending: 'Pending',
       driver_assigned: 'Driver Assigned',
       pickup_arrived: 'Arriving at Pickup',
       package_collected: 'Package Collected',
       in_transit: 'On the Way',
+      at_destination: 'Driver Arrived',
       delivered: 'Delivered',
       cancelled: 'Cancelled',
       failed: 'Failed',
@@ -930,7 +940,7 @@ export default function TrackingPage() {
 
     return (
       <Badge className={colors[status] || colors.pending}>
-        {labels[status] || status}
+        {getCustomStepLabel(status, defaultLabels[status] || status)}
       </Badge>
     );
   };
@@ -1342,63 +1352,96 @@ export default function TrackingPage() {
           <div className="p-4 space-y-4">
             {/* Status Timeline */}
             <div>
-              <h3 className="font-semibold text-lg mb-4">Delivery Status</h3>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-semibold text-base">Delivery Status</h3>
+                {driverConnected && shouldTrackDriver && (
+                  <span className="flex items-center gap-1.5 text-[11px] font-bold tracking-wide text-emerald-600 dark:text-emerald-400">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    </span>
+                    LIVE
+                  </span>
+                )}
+              </div>
               {(() => {
                 const isStopView = !!delivery.stop_info;
                 const steps = isStopView ? STOP_STATUS_STEPS : STATUS_STEPS;
-                // For stop view: map delivered→2, in_transit→1, anything else→0
                 const stopIndex = delivery.status === 'delivered' ? 2
                   : delivery.status === 'in_transit' ? 1
                   : 0;
                 const activeIndex = isStopView ? stopIndex : currentStatusIndex;
                 return (
-                  <div className="relative">
-                    <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200 dark:bg-gray-700" />
-                    <div className="space-y-6">
-                      {steps.map((step, index) => {
-                        const isCompleted = index <= activeIndex;
-                        const isCurrent = index === activeIndex;
-                        const Icon = step.icon;
-                        // Multi-stop: show extra hint when pending but overall delivery is active
-                        const showWaitingHint = isStopView && step.key === 'pending' && isCurrent
-                          && ['driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit'].includes(
-                            // We need the raw parent status — use isCurrent on pending step as proxy
-                            delivery.status === 'in_transit' ? 'in_transit' : ''
-                          );
-
-                        return (
-                          <div key={step.key} className="relative flex items-start gap-4">
-                            <div
-                              className={`relative z-10 flex h-12 w-12 items-center justify-center rounded-full border-2 ${
-                                isCompleted
-                                  ? 'border-transparent'
-                                  : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800'
-                              }`}
-                              style={isCompleted ? { backgroundColor: primaryColor } : {}}
-                            >
-                              <Icon className={`h-5 w-5 ${isCompleted ? 'text-white' : 'text-gray-400'}`} />
-                            </div>
-                            <div className="flex-1 pt-2">
-                              <p className={`text-sm font-medium ${
-                                isCurrent ? 'text-gray-900 dark:text-white'
-                                  : isCompleted ? 'text-gray-600 dark:text-gray-400'
-                                  : 'text-gray-400 dark:text-gray-600'
-                              }`}>
-                                {step.label}
-                              </p>
-                              {isCurrent && (
-                                <p className="text-xs text-gray-500 mt-1">
-                                  {showWaitingHint
-                                    ? 'Driver is completing another stop'
-                                    : new Date(delivery.updated_at).toLocaleTimeString()
-                                  }
-                                </p>
-                              )}
-                            </div>
+                  <div>
+                    {steps.map((step, index) => {
+                      const isCompleted = index < activeIndex;
+                      const isCurrent = index === activeIndex;
+                      const isLast = index === steps.length - 1;
+                      const Icon = step.icon;
+                      const showWaitingHint = isStopView && step.key === 'pending' && isCurrent
+                        && delivery.status === 'in_transit';
+                      return (
+                        <div key={step.key} className="flex gap-3">
+                          {/* Icon + connector column */}
+                          <div className="flex flex-col items-center">
+                            {isCurrent ? (
+                              <div className="relative flex-shrink-0 flex items-center justify-center" style={{ width: 40, height: 40 }}>
+                                <div
+                                  className="absolute inset-0 rounded-full"
+                                  style={{ backgroundColor: `${primaryColor}25`, animation: 'trackRingPulse 1.8s ease-in-out infinite' }}
+                                />
+                                <div
+                                  className="relative flex items-center justify-center rounded-full w-full h-full"
+                                  style={{ backgroundColor: primaryColor, boxShadow: `0 4px 14px ${primaryColor}45` }}
+                                >
+                                  <Icon className="h-4 w-4 text-white" />
+                                </div>
+                              </div>
+                            ) : isCompleted ? (
+                              <div
+                                className="flex-shrink-0 flex items-center justify-center rounded-full"
+                                style={{ width: 40, height: 40, backgroundColor: `${primaryColor}12` }}
+                              >
+                                <CheckCircle2 className="h-5 w-5" style={{ color: primaryColor }} />
+                              </div>
+                            ) : (
+                              <div
+                                className="flex-shrink-0 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800"
+                                style={{ width: 40, height: 40 }}
+                              >
+                                <Icon className="h-4 w-4 text-gray-300 dark:text-gray-600" />
+                              </div>
+                            )}
+                            {!isLast && (
+                              <div
+                                className="w-px flex-1 mt-1"
+                                style={{ minHeight: 20, backgroundColor: isCompleted ? primaryColor : '#e5e7eb', transition: 'background-color 0.6s ease' }}
+                              />
+                            )}
                           </div>
-                        );
-                      })}
-                    </div>
+                          {/* Step text */}
+                          <div className={`flex-1 min-w-0 pt-2 ${isLast ? '' : 'pb-4'}`}>
+                            <p
+                              className={`text-sm leading-snug ${
+                                isCurrent ? 'font-semibold' :
+                                isCompleted ? 'font-medium text-gray-500 dark:text-gray-400' :
+                                'font-normal text-gray-400 dark:text-gray-600'
+                              }`}
+                              style={isCurrent ? { color: primaryColor } : {}}
+                            >
+                              {getCustomStepLabel(step.key, step.label)}
+                            </p>
+                            {isCurrent && (
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {showWaitingHint
+                                  ? 'Driver is completing another stop'
+                                  : `Updated ${new Date(delivery.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })()}
@@ -1435,17 +1478,30 @@ export default function TrackingPage() {
                     Your Driver
                   </h3>
                   <div className="flex items-center gap-3">
-                    <div
-                      className="w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-bold flex-shrink-0"
-                      style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}99)` }}
-                    >
-                      {driverInfo.name?.charAt(0) || 'D'}
+                    <div className="relative flex-shrink-0">
+                      <div
+                        className="w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-bold"
+                        style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}99)` }}
+                      >
+                        {driverInfo.name?.charAt(0) || 'D'}
+                      </div>
+                      {driverConnected && shouldTrackDriver && (
+                        <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-white dark:ring-gray-800 bg-emerald-500" />
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm truncate">{driverInfo.name || 'Driver'}</p>
-                      {driverInfo.phone && delivery.business_branding?.show_driver_phone !== false && (
-                        <p className="text-xs text-muted-foreground">{driverInfo.phone}</p>
-                      )}
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {driverInfo.rating > 0 && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                            <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                            {Number(driverInfo.rating).toFixed(1)}
+                          </span>
+                        )}
+                        {driverInfo.vehicle && (
+                          <span className="text-xs text-muted-foreground truncate">{driverInfo.vehicle}</span>
+                        )}
+                      </div>
                     </div>
                     {driverInfo.phone && delivery.business_branding?.show_driver_phone !== false && (
                       <a
@@ -1454,7 +1510,7 @@ export default function TrackingPage() {
                         style={{ backgroundColor: accentColor, minHeight: '44px' }}
                       >
                         <Phone className="h-3.5 w-3.5" />
-                        Call Driver
+                        Call
                       </a>
                     )}
                   </div>
@@ -1657,6 +1713,12 @@ export default function TrackingPage() {
           </div>
         </div>
       </div>
+      <style>{`
+        @keyframes trackRingPulse {
+          0%, 100% { transform: scale(1); opacity: 0.5; }
+          50% { transform: scale(1.75); opacity: 0; }
+        }
+      `}</style>
     </div>
   );
 }

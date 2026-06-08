@@ -48,6 +48,7 @@ import {
   GripVertical,
   DollarSign,
   MapPin,
+  Tag,
 } from 'lucide-react';
 
 interface VehicleTypeRow {
@@ -117,6 +118,7 @@ export default function SettingsPage() {
   const [footerMessage, setFooterMessage] = useState('');
   const [inTransitMessage, setInTransitMessage] = useState('');
   const [deliveredMessage, setDeliveredMessage] = useState('');
+  const [statusLabels, setStatusLabels] = useState<Record<string, string>>({});
   const [mapStyle, setMapStyle] = useState('streets');
   const [supportEmail, setSupportEmail] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
@@ -268,6 +270,7 @@ export default function SettingsPage() {
           setFooterMessage(settings.footer_message || '');
           setInTransitMessage(settings.in_transit_message || '');
           setDeliveredMessage(settings.delivered_message || '');
+          setStatusLabels(settings.status_labels || {});
           setMapStyle(settings.map_style || 'streets');
           setSupportEmail(settings.support_email || '');
           setWhatsappNumber(settings.whatsapp_number || '');
@@ -861,6 +864,7 @@ export default function SettingsPage() {
         footer_message: footerMessage || null,
         in_transit_message: inTransitMessage || null,
         delivered_message: deliveredMessage || null,
+        status_labels: Object.values(statusLabels).some(v => v) ? statusLabels : null,
         map_style: mapStyle,
         support_email: supportEmail || null,
         whatsapp_number: whatsappNumber || null,
@@ -1618,6 +1622,39 @@ export default function SettingsPage() {
                   maxLength={120}
                 />
                 <p className="text-xs text-muted-foreground">Shown at the bottom of the tracking page</p>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Custom Status Labels */}
+            <div className="space-y-4">
+              <Label className="flex items-center gap-2">
+                <Tag className="h-4 w-4" />
+                Custom Status Labels
+              </Label>
+              <p className="text-xs text-muted-foreground -mt-2">Override the step labels shown in the delivery status timeline. Leave blank to use SwiftDash defaults. Plain text only.</p>
+              <div className="space-y-2">
+                {([
+                  { key: 'pending', defaultLabel: 'Order Placed' },
+                  { key: 'driver_assigned', defaultLabel: 'Driver Assigned' },
+                  { key: 'pickup_arrived', defaultLabel: 'Arriving at Pickup' },
+                  { key: 'package_collected', defaultLabel: 'Package Collected' },
+                  { key: 'in_transit', defaultLabel: 'On the Way' },
+                  { key: 'at_destination', defaultLabel: 'Driver Arrived' },
+                  { key: 'delivered', defaultLabel: 'Delivered' },
+                ] as { key: string; defaultLabel: string }[]).map(({ key, defaultLabel }) => (
+                  <div key={key} className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground font-mono w-40 shrink-0">{key}</span>
+                    <Input
+                      value={statusLabels[key] || ''}
+                      onChange={(e) => setStatusLabels(prev => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={defaultLabel}
+                      maxLength={60}
+                      className="flex-1"
+                    />
+                  </div>
+                ))}
               </div>
             </div>
 
