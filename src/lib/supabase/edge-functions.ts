@@ -184,7 +184,15 @@ export class EdgeFunctions {
     });
 
     if (error) {
-      throw new Error(error.message || 'Failed to pair driver');
+      // Try to extract the actual message from the edge function response body
+      let message = error.message || 'Failed to pair driver';
+      try {
+        if ((error as any).context?.json) {
+          const body = await (error as any).context.json();
+          if (body?.message) message = body.message;
+        }
+      } catch { /* ignore parse errors */ }
+      throw new Error(message);
     }
 
     return data;

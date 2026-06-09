@@ -15,7 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
@@ -54,10 +53,7 @@ import {
   Loader2,
   CheckCircle2,
   ArrowRight,
-  Receipt,
   Trash2,
-  ChevronDown,
-  ChevronUp,
   FileSpreadsheet,
   Upload,
   AlertCircle,
@@ -95,13 +91,6 @@ interface PickupLocation {
   instructions: string;
 }
 
-interface OrderItem {
-  id: string;
-  name: string;
-  quantity: number;
-  unitPrice: number;
-}
-
 export default function OrdersPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -111,8 +100,6 @@ export default function OrdersPage() {
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledTime, setScheduledTime] = useState<string>('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isOrderDetailsExpanded, setIsOrderDetailsExpanded] = useState(false);
-  const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [routeDistance, setRouteDistance] = useState<number>(0);
   const [routeDuration, setRouteDuration] = useState<number>(0);
   const [routeAlternatives, setRouteAlternatives] = useState<any[]>([]);
@@ -128,15 +115,6 @@ export default function OrdersPage() {
     weight: 0,
     value: 0
   });
-  
-  // Order items state (Shipday-style)
-  const [orderItems, setOrderItems] = useState<OrderItem[]>([
-    { id: '1', name: '', quantity: 1, unitPrice: 0 }
-  ]);
-  const [taxPercentage, setTaxPercentage] = useState<number>(0);
-  const [deliveryFee, setDeliveryFee] = useState<number>(0);
-  const [tipAmount, setTipAmount] = useState<number>(0);
-  const [discountAmount, setDiscountAmount] = useState<number>(0);
   
   // Submission state
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -254,47 +232,6 @@ export default function OrdersPage() {
     }
   };
 
-  // Order Items Management
-  const addOrderItem = () => {
-    const newItem: OrderItem = {
-      id: Date.now().toString(),
-      name: '',
-      quantity: 1,
-      unitPrice: 0
-    };
-    setOrderItems([...orderItems, newItem]);
-  };
-
-  const removeOrderItem = (id: string) => {
-    if (orderItems.length > 1) {
-      setOrderItems(orderItems.filter(item => item.id !== id));
-    }
-  };
-
-  const updateOrderItem = (id: string, field: keyof OrderItem, value: string | number) => {
-    setOrderItems(orderItems.map(item => 
-      item.id === id ? { ...item, [field]: value } : item
-    ));
-  };
-
-  // Calculate Order Totals
-  const calculateOrderTotals = () => {
-    const subtotal = orderItems.reduce((sum, item) => {
-      return sum + (item.quantity * item.unitPrice);
-    }, 0);
-    
-    const tax = subtotal * (taxPercentage / 100);
-    const grandTotal = subtotal + tax + deliveryFee + tipAmount - discountAmount;
-    
-    return {
-      subtotal,
-      tax,
-      grandTotal: Math.max(0, grandTotal)
-    };
-  };
-
-  const orderTotals = calculateOrderTotals();
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -313,6 +250,20 @@ export default function OrdersPage() {
       }
       if (!dropoffStops[0].contactName || !dropoffStops[0].contactPhone) {
         throw new Error('Please enter dropoff contact information');
+      }
+
+      // Validate scheduled time
+      if (isScheduled) {
+        if (!scheduledTime) {
+          throw new Error('Please set a scheduled pickup date and time');
+        }
+        const scheduledDate = new Date(scheduledTime);
+        if (isNaN(scheduledDate.getTime())) {
+          throw new Error('Invalid scheduled pickup time');
+        }
+        if (scheduledDate <= new Date()) {
+          throw new Error('Scheduled pickup time must be in the future');
+        }
       }
 
       // Validate all stops for multi-stop
@@ -387,7 +338,7 @@ export default function OrdersPage() {
         
         // Scheduling
         is_scheduled: isScheduled || false,
-        scheduled_pickup_time: isScheduled ? scheduledTime : null,
+        scheduled_pickup_time: isScheduled && scheduledTime ? new Date(scheduledTime).toISOString() : null,
       };
 
       const { data: createdDelivery, error: insertError } = await supabase
@@ -521,7 +472,7 @@ export default function OrdersPage() {
     }, 350); // Slightly longer than the 300ms transition
 
     return () => clearTimeout(timer);
-  }, [isSidebarCollapsed, isOrderDetailsExpanded]);
+  }, [isSidebarCollapsed]);
 
   // Helper function to set demo location (for testing - remove in production)
   const setDemoPickupLocation = () => {
@@ -562,9 +513,7 @@ export default function OrdersPage() {
         className={`${
           isSidebarCollapsed 
             ? 'w-0' 
-            : isOrderDetailsExpanded 
-              ? 'w-[65%] min-w-[800px]' 
-              : 'w-[30%] min-w-[360px] max-w-[450px]'
+            : 'w-[30%] min-w-[360px] max-w-[450px]'
         } border-r bg-background transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0`}
       >
         <div className="w-full h-full overflow-y-auto">
@@ -850,222 +799,6 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              <Separator />
-
-              {/* Order Details - Expandable */}
-              <Collapsible
-                open={isOrderDetailsExpanded}
-                onOpenChange={setIsOrderDetailsExpanded}
-                className="space-y-4"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label className="text-base font-semibold flex items-center gap-2">
-                      <Receipt className="h-4 w-4" />
-                      Order Details (Optional)
-                    </Label>
-                    <p className="text-sm text-muted-foreground">
-                      Add items, prices, tax, and fees like Shipday
-                    </p>
-                  </div>
-                  <CollapsibleTrigger asChild>
-                    <Button variant="ghost" size="sm">
-                      {isOrderDetailsExpanded ? (
-                        <>
-                          <ChevronUp className="h-4 w-4 mr-2" />
-                          Collapse
-                        </>
-                      ) : (
-                        <>
-                          <ChevronDown className="h-4 w-4 mr-2" />
-                          Expand
-                        </>
-                      )}
-                    </Button>
-                  </CollapsibleTrigger>
-                </div>
-
-                <CollapsibleContent className="space-y-4">
-                  {/* Order Items Table */}
-                  <div className="border rounded-lg overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-[40%]">Item Name</TableHead>
-                          <TableHead className="w-[15%]">Qty</TableHead>
-                          <TableHead className="w-[20%]">Unit Price (₱)</TableHead>
-                          <TableHead className="w-[20%] text-right">Total (₱)</TableHead>
-                          <TableHead className="w-[5%]"></TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {orderItems.map((item, index) => (
-                          <TableRow key={item.id}>
-                            <TableCell>
-                              <Input
-                                placeholder="e.g., Chicken Adobo"
-                                value={item.name}
-                                onChange={(e) => updateOrderItem(item.id, 'name', e.target.value)}
-                                className="h-9"
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                min="1"
-                                value={item.quantity}
-                                onChange={(e) => updateOrderItem(item.id, 'quantity', parseInt(e.target.value) || 1)}
-                                className="h-9"
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={item.unitPrice}
-                                onChange={(e) => updateOrderItem(item.id, 'unitPrice', parseFloat(e.target.value) || 0)}
-                                className="h-9"
-                              />
-                            </TableCell>
-                            <TableCell className="text-right font-medium">
-                              ₱{(item.quantity * item.unitPrice).toFixed(2)}
-                            </TableCell>
-                            <TableCell>
-                              {orderItems.length > 1 && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => removeOrderItem(item.id)}
-                                  className="h-8 w-8 p-0"
-                                >
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={addOrderItem}
-                    className="w-full"
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Add Item
-                  </Button>
-
-                  <Separator />
-
-                  {/* Order Summary Calculations */}
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label htmlFor="tax-percentage">Tax (%)</Label>
-                        <Input
-                          id="tax-percentage"
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          max="100"
-                          placeholder="0"
-                          value={taxPercentage || ''}
-                          onChange={(e) => setTaxPercentage(parseFloat(e.target.value) || 0)}
-                          className="mt-1.5"
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="delivery-fee-override">Delivery Fee (₱)</Label>
-                        <Input
-                          id="delivery-fee-override"
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="Auto-calculated"
-                          value={deliveryFee || ''}
-                          onChange={(e) => setDeliveryFee(parseFloat(e.target.value) || 0)}
-                          className="mt-1.5"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label htmlFor="tip-amount">Tip (₱)</Label>
-                        <Input
-                          id="tip-amount"
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="0"
-                          value={tipAmount || ''}
-                          onChange={(e) => setTipAmount(parseFloat(e.target.value) || 0)}
-                          className="mt-1.5"
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="discount-amount">Discount (₱)</Label>
-                        <Input
-                          id="discount-amount"
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="0"
-                          value={discountAmount || ''}
-                          onChange={(e) => setDiscountAmount(parseFloat(e.target.value) || 0)}
-                          className="mt-1.5"
-                        />
-                      </div>
-                    </div>
-
-                    <Separator />
-
-                    {/* Order Total Summary */}
-                    <Card className="bg-muted/30">
-                      <CardContent className="pt-4 space-y-2">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Subtotal</span>
-                          <span className="font-medium">₱{orderTotals.subtotal.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Tax ({taxPercentage}%)</span>
-                          <span className="font-medium">₱{orderTotals.tax.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Delivery Fee</span>
-                          <span className="font-medium">₱{deliveryFee.toFixed(2)}</span>
-                        </div>
-                        {tipAmount > 0 && (
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Tip</span>
-                            <span className="font-medium">₱{tipAmount.toFixed(2)}</span>
-                          </div>
-                        )}
-                        {discountAmount > 0 && (
-                          <div className="flex justify-between text-sm text-green-600">
-                            <span>Discount</span>
-                            <span className="font-medium">-₱{discountAmount.toFixed(2)}</span>
-                          </div>
-                        )}
-                        <Separator />
-                        <div className="flex justify-between">
-                          <span className="font-semibold">Grand Total</span>
-                          <span className="text-xl font-bold text-primary">
-                            ₱{orderTotals.grandTotal.toFixed(2)}
-                          </span>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-
               {/* Schedule Option */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -1086,6 +819,7 @@ export default function OrdersPage() {
                         id="schedule-date"
                         type="date"
                         className="mt-1.5"
+                        min={new Date().toISOString().split('T')[0]}
                         value={scheduledTime.split('T')[0] || ''}
                         onChange={(e) => {
                           const date = e.target.value;
@@ -1856,9 +1590,7 @@ export default function OrdersPage() {
         className={`fixed ${
           isSidebarCollapsed 
             ? 'left-0' 
-            : isOrderDetailsExpanded
-              ? 'left-[min(65vw,800px)]'
-              : 'left-[min(30vw,450px)] xl:left-[420px]'
+            : 'left-[min(30vw,450px)] xl:left-[420px]'
         } top-1/2 -translate-y-1/2 z-20 bg-background border border-l-0 rounded-r-md p-2 hover:bg-muted transition-all duration-300 shadow-lg`}
         aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       >

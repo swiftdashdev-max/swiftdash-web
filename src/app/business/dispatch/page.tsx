@@ -1079,9 +1079,25 @@ export default function DispatchPage() {
     try {
       setAssigning(true);
 
+      // Pre-flight: check all selected deliveries have a business_id
+      const unlinked = selectedDeliveries.filter(id => {
+        const d = deliveries.find(del => del.id === id);
+        return !d?.business_id;
+      });
+      if (unlinked.length > 0) {
+        toast({
+          title: '⚠️ Deliveries Not Linked to a Business',
+          description: `${unlinked.length} delivery(ies) have no business account attached and cannot be auto-assigned. Create new deliveries from the Orders page to link them correctly.`,
+          variant: 'destructive',
+        });
+        setAssigning(false);
+        return;
+      }
+
       let successCount = 0;
       let failCount = 0;
       let noDriverCount = 0;
+      const failReasons: string[] = [];
 
       // Use Edge Function for auto-assignment
       for (const deliveryId of selectedDeliveries) {
@@ -1099,10 +1115,14 @@ export default function DispatchPage() {
             sendTrackingNotifications(deliveryId);
           } else {
             failCount++;
+            const reason = result?.message || 'Unexpected response';
+            failReasons.push(reason);
             console.warn(`⚠️ Assignment returned unexpected result for ${deliveryId}:`, result);
           }
         } catch (err) {
           failCount++;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          failReasons.push(errMsg);
           console.error(`❌ Error calling pair-driver for ${deliveryId}:`, err);
         }
       }
@@ -1125,9 +1145,10 @@ export default function DispatchPage() {
           description: `${successCount} assigned, ${noDriverCount} had no available driver. Check fleet status.`,
         });
       } else if (failCount > 0) {
+        const uniqueReasons = [...new Set(failReasons)].slice(0, 2).join(' · ');
         toast({ 
           title: '⚠️ Some Assignments Failed', 
-          description: `${successCount} assigned, ${failCount} failed.`,
+          description: uniqueReasons || `${successCount} assigned, ${failCount} failed.`,
           variant: 'destructive'
         });
       } else {
@@ -1506,7 +1527,24 @@ export default function DispatchPage() {
         }
       }
 
-      toast({ title: '✅ Routes Assigned', description: `${assignedCount} deliveries assigned to ${routeOptimizationResult.driver_routes.length} drivers.` });
+      // Warn if any assigned deliveries are scheduled far in the future
+      const now = new Date();
+      const futureScheduled = routeOptimizationResult.driver_routes
+        .flatMap((r: any) => r.deliveries)
+        .filter((d: any) => {
+          const delivery = deliveries.find(del => del.id === d.delivery_id);
+          if (!delivery?.is_scheduled || !delivery.scheduled_pickup_time) return false;
+          const diffMin = (new Date(delivery.scheduled_pickup_time).getTime() - now.getTime()) / 60000;
+          return diffMin > 30;
+        });
+      if (futureScheduled.length > 0) {
+        toast({
+          title: '⚠️ Scheduled Deliveries Assigned',
+          description: `${futureScheduled.length} delivery${futureScheduled.length > 1 ? 'ies are' : ' is'} scheduled for later. Drivers have been pre-assigned but pickup hasn't started yet.`,
+        });
+      } else {
+        toast({ title: '✅ Routes Assigned', description: `${assignedCount} deliveries assigned to ${routeOptimizationResult.driver_routes.length} drivers.` });
+      }
       setShowRouteOptimizationModal(false);
       setRouteOptimizationResult(null);
       fetchData(); // Refresh data
@@ -2205,6 +2243,8 @@ export default function DispatchPage() {
         matchesStatus = delivery.status === 'cancelled';
       } else if (statusFilter === 'failed_attempt') {
         matchesStatus = ['failed_attempt', 'failed'].includes(delivery.status);
+      } else if (statusFilter === 'scheduled') {
+        matchesStatus = delivery.status === 'pending' && !!delivery.is_scheduled;
       } else {
         matchesStatus = delivery.status === statusFilter;
       }
@@ -2215,6 +2255,7 @@ export default function DispatchPage() {
 
   // Use server-side counts (updated by fetchData)
   const pendingCount = statusCounts.pending || 0;
+  const scheduledCount = deliveries.filter(d => d.is_scheduled && d.status === 'pending').length;
   const offeredCount = statusCounts.driver_offered || 0;
   const assignedCount = statusCounts.driver_assigned || 0;
   const inTransitCount = statusCounts.in_transit || 0;
@@ -2281,16 +2322,14 @@ export default function DispatchPage() {
             Manage and assign deliveries to your fleet
           </p>
         </div>
-        <div className="flex gap-2">
-          {/* View Mode Toggle */}
-          <div className={`flex items-center rounded-lg border p-0.5 ${viewMode === 'map' ? 'bg-white/10 border-white/20' : 'bg-muted'}`}>
+        <div className="flex gap-2 items-center">
+          {/* View Mode Toggle — always visible, consistent styling */}
+          <div className="flex items-center rounded-lg border bg-muted p-0.5">
             <button
               onClick={() => setViewMode('list')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                 viewMode === 'list'
-                  ? 'bg-white shadow-sm text-gray-900'
-                  : viewMode === 'map'
-                  ? 'text-white/70 hover:text-white'
+                  ? 'bg-background shadow-sm text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -2301,7 +2340,7 @@ export default function DispatchPage() {
               onClick={() => setViewMode('map')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                 viewMode === 'map'
-                  ? 'bg-white shadow-sm text-gray-900'
+                  ? 'bg-background shadow-sm text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -2501,6 +2540,7 @@ export default function DispatchPage() {
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger value="pending" className="gap-1.5">Pending {pendingCount > 0 && <Badge variant="secondary" className="h-5 px-1.5 text-xs">{pendingCount}</Badge>}</TabsTrigger>
+                <TabsTrigger value="scheduled" className="gap-1.5">Scheduled {scheduledCount > 0 && <Badge variant="secondary" className="h-5 px-1.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">{scheduledCount}</Badge>}</TabsTrigger>
                 <TabsTrigger value="driver_assigned">Assigned</TabsTrigger>
                 <TabsTrigger value="in_transit">In Transit</TabsTrigger>
                 <TabsTrigger value="delivered">Delivered</TabsTrigger>
