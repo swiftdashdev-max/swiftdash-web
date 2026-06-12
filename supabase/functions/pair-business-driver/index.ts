@@ -91,11 +91,14 @@ serve(async (req) => {
       });
     }
 
-    // Check if already assigned
-    if (delivery.status !== 'pending' || delivery.driver_id) {
+    // Check if delivery is in an assignable state
+    // 'pending'       → normal new assignment
+    // 'failed_attempt' → retry/reassign after a failed delivery attempt
+    const reassignableStatuses = ['pending', 'failed_attempt'];
+    if (!reassignableStatuses.includes(delivery.status)) {
       return new Response(JSON.stringify({
         ok: false,
-        message: `Delivery already assigned or status is ${delivery.status}`
+        message: `Delivery cannot be assigned - current status is '${delivery.status}'. Only pending or failed_attempt deliveries can be assigned.`
       }), {
         headers: { ...corsHeaders, 'content-type': 'application/json' },
         status: 400
@@ -257,6 +260,19 @@ serve(async (req) => {
     }
 
     // ==================================================
+    // RESOLVE OPEN DELIVERY ATTEMPT (failed_attempt reassignment)
+    // ==================================================
+    // If this is a retry on a failed_attempt, close out the pending attempt record
+    if (delivery.status === 'failed_attempt') {
+      await supabase
+        .from('delivery_attempts')
+        .update({ resolution: 'rescheduled', resolved_at: new Date().toISOString() })
+        .eq('delivery_id', delivery.id)
+        .eq('resolution', 'pending');
+      console.log(`📋 Resolved open delivery_attempts record for ${delivery.id}`);
+    }
+
+    // ==================================================
     // CALCULATE PRICING
     // ==================================================
     const { data: vehicleType } = await supabase
@@ -344,6 +360,15 @@ serve(async (req) => {
       .from('driver_profiles')
       .update({ current_status: 'busy' })
       .eq('id', assignedDriver.driver_id);
+
+    // Also free up the previously assigned driver (if different — i.e. failed_attempt reassignment)
+    if (delivery.driver_id && delivery.driver_id !== assignedDriver.driver_id) {
+      await supabase
+        .from('driver_profiles')
+        .update({ current_status: 'online' })
+        .eq('id', delivery.driver_id);
+      console.log(`🔄 Released previous driver ${delivery.driver_id} back to online`);
+    }
 
     // Log the assignment
     await supabase.rpc('log_fleet_action', {

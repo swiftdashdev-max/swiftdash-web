@@ -244,6 +244,10 @@ export default function DispatchPage() {
   const [cancelTargetIds, setCancelTargetIds] = useState<string[]>([]);
   const [isBatchCancelling, setIsBatchCancelling] = useState(false);
 
+  // Return to sender confirmation dialog
+  const [showReturnToSenderDialog, setShowReturnToSenderDialog] = useState(false);
+  const [returnToSenderTarget, setReturnToSenderTarget] = useState<Delivery | null>(null);
+
   // View mode toggle
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
 
@@ -1422,9 +1426,57 @@ export default function DispatchPage() {
     }
   };
 
-  const handleReturnToSender = async (delivery: Delivery) => {
+  const handleRedispatch = async (delivery: Delivery) => {
     try {
-      // Update the latest attempt resolution
+      // Resolve the pending attempt
+      await supabase
+        .from('delivery_attempts')
+        .update({ resolution: 'rescheduled', resolved_at: new Date().toISOString() })
+        .eq('delivery_id', delivery.id)
+        .eq('resolution', 'pending');
+
+      // Reset delivery back to pending so it can be re-assigned
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          status: 'pending',
+          driver_id: null,
+          fleet_vehicle_id: null,
+          is_scheduled: false,
+          scheduled_pickup_time: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', delivery.id);
+
+      if (error) throw error;
+
+      setDeliveries(prev =>
+        prev.map(d =>
+          d.id === delivery.id
+            ? { ...d, status: 'pending', driver_id: undefined, updated_at: new Date().toISOString() }
+            : d
+        )
+      );
+
+      toast({ title: '🔄 Back to Pending', description: `${delivery.tracking_number || delivery.id.substring(0, 8)} is ready for reassignment.` });
+    } catch (error) {
+      console.error('❌ Error redispatching:', error);
+      toast({ title: 'Redispatch failed', description: (error as any).message, variant: 'destructive' });
+    }
+  };
+
+  const handleReturnToSender = (delivery: Delivery) => {
+    setReturnToSenderTarget(delivery);
+    setShowReturnToSenderDialog(true);
+  };
+
+  const confirmReturnToSender = async () => {
+    if (!returnToSenderTarget) return;
+    const delivery = returnToSenderTarget;
+    setShowReturnToSenderDialog(false);
+    setReturnToSenderTarget(null);
+    try {
+      // Resolve the open attempt record
       await supabase
         .from('delivery_attempts')
         .update({ resolution: 'returned_to_sender', resolved_at: new Date().toISOString() })
@@ -1433,7 +1485,7 @@ export default function DispatchPage() {
         .order('attempt_number', { ascending: false })
         .limit(1);
 
-      // Update delivery status to failed (final)
+      // Mark delivery as failed (terminal)
       const { error } = await supabase
         .from('deliveries')
         .update({
@@ -2755,6 +2807,10 @@ export default function DispatchPage() {
                           )}
                           {delivery.status === 'failed_attempt' && (
                             <>
+                              <DropdownMenuItem onClick={() => handleRedispatch(delivery)}>
+                                <RefreshCw className="h-4 w-4 mr-2" />
+                                Redispatch Now
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleReschedule(delivery)}>
                                 <Calendar className="h-4 w-4 mr-2" />
                                 Reschedule Delivery
@@ -3667,6 +3723,13 @@ export default function DispatchPage() {
                     {selectedDeliveryForView.status === 'failed_attempt' && (
                       <>
                         <Button
+                          onClick={() => handleRedispatch(selectedDeliveryForView!)}
+                          className="w-full sm:w-auto"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                          Redispatch Now
+                        </Button>
+                        <Button
                           variant="outline"
                           onClick={() => handleReschedule(selectedDeliveryForView!)}
                           className="w-full sm:w-auto border-blue-400 text-blue-600 hover:bg-blue-50"
@@ -4164,6 +4227,31 @@ export default function DispatchPage() {
       </Dialog>
 
       {/* Cancel Confirmation Dialog */}
+      {/* Return to Sender Confirm Dialog */}
+      <AlertDialog open={showReturnToSenderDialog} onOpenChange={setShowReturnToSenderDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <RotateCcw className="h-5 w-5 text-destructive" />
+              Return to Sender?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently close this delivery and mark it as <strong>failed</strong>. The package will be returned to the sender. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go Back</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmReturnToSender}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Yes, Return to Sender
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
