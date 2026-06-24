@@ -377,6 +377,7 @@ export default function DispatchPage() {
                     managed_by_business_id
                   `)
                   .eq('id', updatedDriverId)
+                  .eq('managed_by_business_id', businessId)
                   .eq('is_online', true)
                   .single()
                   .then(async ({ data, error }) => {
@@ -483,6 +484,7 @@ export default function DispatchPage() {
       const driversPromise = supabase
         .from('driver_profiles')
         .select('id, vehicle_type_id, is_online, rating, vehicle_model, plate_number, employment_type, managed_by_business_id')
+        .eq('managed_by_business_id', businessId)
         .eq('is_online', true)
         .order('rating', { ascending: false })
         .limit(100);
@@ -2892,6 +2894,34 @@ export default function DispatchPage() {
           </DialogHeader>
 
           <div className="space-y-4 py-2">
+            {/* Scheduled deliveries warning */}
+            {(() => {
+              const now = new Date();
+              const scheduledEarly = selectedDeliveries
+                .map(id => deliveries.find(d => d.id === id))
+                .filter((d): d is Delivery => !!(d?.is_scheduled && d.scheduled_pickup_time))
+                .filter(d => new Date(d.scheduled_pickup_time!) > new Date(now.getTime() + 30 * 60 * 1000));
+              if (scheduledEarly.length === 0) return null;
+              return (
+                <div className="flex items-start gap-3 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+                  <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-semibold text-amber-800 dark:text-amber-200">
+                      {scheduledEarly.length === 1 ? '1 scheduled delivery' : `${scheduledEarly.length} scheduled deliveries`} selected
+                    </p>
+                    <p className="text-amber-700 dark:text-amber-300 mt-0.5 text-xs">
+                      Dispatching now will notify the driver immediately — not at the scheduled pickup time. The driver may arrive too early.
+                    </p>
+                    {scheduledEarly.map(d => (
+                      <p key={d.id} className="text-amber-600 dark:text-amber-400 text-xs mt-0.5 font-mono">
+                        · {d.tracking_number}: scheduled {format(new Date(d.scheduled_pickup_time!), 'MMM d, h:mm a')}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Auto-assign option */}
             <Card
               className="cursor-pointer transition-all border-2 hover:border-primary/50 hover:bg-muted/30"
@@ -2932,13 +2962,13 @@ export default function DispatchPage() {
                 const fleetDriverIds = new Set(fleetVehicles.map(v => v.assigned_driver_id).filter(Boolean));
                 const filteredDrivers = drivers.filter(d => {
                   const isFleet = fleetDriverIds.has(d.id) || d.managed_by_business_id === businessId;
+                  if (!isFleet) return false;
                   const q = driverSearchQuery.toLowerCase();
-                  const matchesSearch = !q ||
+                  return !q ||
                     (d.full_name || '').toLowerCase().includes(q) ||
                     (d.phone || '').toLowerCase().includes(q) ||
                     (d.vehicle_model || '').toLowerCase().includes(q) ||
                     (d.plate_number || '').toLowerCase().includes(q);
-                  return matchesSearch;
                 });
 
                 if (filteredDrivers.length === 0) {

@@ -1185,6 +1185,16 @@ export default function TrackingPage() {
   const headerSubColor = delivery.business_branding?.header_text_color
     ? `${delivery.business_branding.header_text_color}b3`
     : isHeaderDark(headerBg) ? 'rgba(255,255,255,0.7)' : 'rgba(31,41,55,0.6)';
+  // Guard against very light primary colors (e.g. white) that become invisible on white cards
+  const primaryColorLuminance = (() => {
+    const c = primaryColor.replace('#', '');
+    if (c.length !== 6) return 0;
+    const r = parseInt(c.slice(0, 2), 16);
+    const g = parseInt(c.slice(2, 4), 16);
+    const b = parseInt(c.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000;
+  })();
+  const timelineColor = primaryColorLuminance > 200 ? '#3b82f6' : primaryColor;
 
   return (
     <div className="min-h-screen" style={pageBg ? { backgroundColor: pageBg } : { backgroundColor: '#f9fafb' }}>
@@ -1224,10 +1234,10 @@ export default function TrackingPage() {
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <div className="text-right">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="text-right min-w-0">
                 <p className="text-xs" style={{ color: headerSubColor }}>Tracking</p>
-                <p className="font-mono font-semibold text-xs" style={{ color: headerTextColor }}>{trackingNumber}</p>
+                <p className="font-mono font-semibold text-xs truncate max-w-[90px] sm:max-w-none" title={trackingNumber} style={{ color: headerTextColor }}>{trackingNumber}</p>
                 {delivery.stop_info && (
                   <p className="text-xs mt-0.5" style={{ color: headerSubColor }}>
                     Stop {delivery.stop_info.stop_number}
@@ -1388,11 +1398,11 @@ export default function TrackingPage() {
                               <div className="relative flex-shrink-0 flex items-center justify-center" style={{ width: 40, height: 40 }}>
                                 <div
                                   className="absolute inset-0 rounded-full"
-                                  style={{ backgroundColor: `${primaryColor}25`, animation: 'trackRingPulse 1.8s ease-in-out infinite' }}
+                                  style={{ backgroundColor: `${timelineColor}25`, animation: 'trackRingPulse 1.8s ease-in-out infinite' }}
                                 />
                                 <div
                                   className="relative flex items-center justify-center rounded-full w-full h-full"
-                                  style={{ backgroundColor: primaryColor, boxShadow: `0 4px 14px ${primaryColor}45` }}
+                                  style={{ backgroundColor: timelineColor, boxShadow: `0 4px 14px ${timelineColor}45` }}
                                 >
                                   <Icon className="h-4 w-4 text-white" />
                                 </div>
@@ -1400,22 +1410,22 @@ export default function TrackingPage() {
                             ) : isCompleted ? (
                               <div
                                 className="flex-shrink-0 flex items-center justify-center rounded-full"
-                                style={{ width: 40, height: 40, backgroundColor: `${primaryColor}12` }}
+                                style={{ width: 40, height: 40, backgroundColor: `${timelineColor}15` }}
                               >
-                                <CheckCircle2 className="h-5 w-5" style={{ color: primaryColor }} />
+                                <CheckCircle2 className="h-5 w-5" style={{ color: timelineColor }} />
                               </div>
                             ) : (
                               <div
-                                className="flex-shrink-0 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800"
+                                className="flex-shrink-0 flex items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700"
                                 style={{ width: 40, height: 40 }}
                               >
-                                <Icon className="h-4 w-4 text-gray-300 dark:text-gray-600" />
+                                <Icon className="h-4 w-4 text-gray-500 dark:text-gray-400" />
                               </div>
                             )}
                             {!isLast && (
                               <div
                                 className="w-px flex-1 mt-1"
-                                style={{ minHeight: 20, backgroundColor: isCompleted ? primaryColor : '#e5e7eb', transition: 'background-color 0.6s ease' }}
+                                style={{ minHeight: 20, backgroundColor: isCompleted ? timelineColor : '#e5e7eb', transition: 'background-color 0.6s ease' }}
                               />
                             )}
                           </div>
@@ -1427,7 +1437,7 @@ export default function TrackingPage() {
                                 isCompleted ? 'font-medium text-gray-500 dark:text-gray-400' :
                                 'font-normal text-gray-400 dark:text-gray-600'
                               }`}
-                              style={isCurrent ? { color: primaryColor } : {}}
+                              style={isCurrent ? { color: timelineColor } : {}}
                             >
                               {getCustomStepLabel(step.key, step.label)}
                             </p>
