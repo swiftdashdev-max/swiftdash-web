@@ -215,6 +215,7 @@ export default function DispatchPage() {
   const [loadingStops, setLoadingStops] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedStopId, setCopiedStopId] = useState<string | null>(null);
+  const [trackingBaseUrl, setTrackingBaseUrl] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [realtimeUpdates, setRealtimeUpdates] = useState(0); // Track real-time updates
   const [selectedDeliveries, setSelectedDeliveries] = useState<string[]>([]);
@@ -426,6 +427,30 @@ export default function DispatchPage() {
       fetchData();
     }
   }, [currentPage, sortColumn, sortDirection, dateFilter, customDateRange]);
+
+  // Fetch the verified custom tracking domain for this business once on mount
+  useEffect(() => {
+    if (!businessId) return;
+    supabase
+      .from('business_accounts')
+      .select('tracking_domain, tracking_domain_verification_status, custom_domain, domain_verification_status')
+      .eq('id', businessId)
+      .single()
+      .then(({ data }) => {
+        if (!data) return;
+        if (data.tracking_domain && data.tracking_domain_verification_status === 'verified') {
+          setTrackingBaseUrl(`https://${data.tracking_domain}`);
+        } else if (data.custom_domain && data.domain_verification_status === 'verified') {
+          setTrackingBaseUrl(`https://${data.custom_domain}`);
+        }
+      });
+  }, [businessId]);
+
+  // Returns a full tracking URL using the business's custom domain when verified
+  const getTrackingUrl = (code: string) => {
+    const base = trackingBaseUrl || window.location.origin;
+    return `${base}/track/${code}`;
+  };
 
   const fetchData = async () => {
     try {
@@ -1717,7 +1742,7 @@ export default function DispatchPage() {
 
   const handleCopyTrackingLink = (trackingNumber?: string) => {
     if (!trackingNumber) return;
-    const link = `${window.location.origin}/track/${trackingNumber}`;
+    const link = getTrackingUrl(trackingNumber);
     navigator.clipboard.writeText(link);
     setCopiedLink(true);
     toast({ title: '📋 Copied!', description: 'Tracking link copied to clipboard.' });
@@ -1726,7 +1751,7 @@ export default function DispatchPage() {
 
   const handleCopyStopLink = (stop: DeliveryStop) => {
     if (!stop.tracking_code) return;
-    const link = `${window.location.origin}/track/${stop.tracking_code}`;
+    const link = getTrackingUrl(stop.tracking_code);
     navigator.clipboard.writeText(link);
     setCopiedStopId(stop.id);
     toast({
@@ -3125,7 +3150,7 @@ export default function DispatchPage() {
                         {copiedLink ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                       </Button>
                       <a
-                        href={`/track/${selectedDeliveryForView!.tracking_number}`}
+                        href={getTrackingUrl(selectedDeliveryForView!.tracking_number)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-muted-foreground hover:text-primary"
@@ -3180,7 +3205,7 @@ export default function DispatchPage() {
                           )}
                         </Button>
                         <a
-                          href={`/track/${stop.tracking_code}`}
+                          href={getTrackingUrl(stop.tracking_code || '')}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-muted-foreground hover:text-primary flex-shrink-0"
