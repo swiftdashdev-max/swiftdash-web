@@ -73,6 +73,17 @@ export function invalidateAuthCache(keyHash?: string): void {
  * Uses a single JOIN query (api_keys + user_profiles) and caches the
  * result in-memory for 5 minutes to eliminate repeat DB round-trips.
  */
+/**
+ * Hash an API key the way the database stores it.
+ *
+ * Exported so a route that pushes its whole flow into one SQL call can pass the
+ * hash straight through, instead of spending a round trip resolving the key and
+ * another doing the work.
+ */
+export function hashApiKey(apiKey: string): string {
+  return createHash('sha256').update(apiKey).digest('hex');
+}
+
 export async function authenticateApiKey(
   apiKey: string | null
 ): Promise<AuthenticatedBusiness | null> {

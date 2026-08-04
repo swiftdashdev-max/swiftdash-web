@@ -15,6 +15,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getServiceClient } from '@/lib/supabase-service';
 
+/** Run close to Roxas City rather than in Vercel's US East default. */
+export const preferredRegion = ['sin1'];
+
 /** Statuses after which the app should stop polling. */
 const TERMINAL = ['resolved', 'cancelled', 'rejected'];
 
