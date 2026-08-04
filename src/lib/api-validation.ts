@@ -193,6 +193,29 @@ export const API_KEY_CREATE_RULES: FieldRule[] = [
   { field: 'name', required: true, type: 'string', minLength: 1, maxLength: 100 },
 ];
 
+/**
+ * Emergency incident report, submitted by a citizen app.
+ *
+ * Note what is NOT required: deviceLat/deviceLng. They are used to verify the
+ * pin is near the reporter, but a handset that cannot get a fix — indoors, in a
+ * storm, on cheap hardware — must still be able to report a fire. Missing device
+ * coordinates flag the report for dispatcher review rather than rejecting it.
+ */
+export const EMERGENCY_REPORT_RULES: FieldRule[] = [
+  { field: 'incidentType',  required: true,  oneOf: ['medical', 'fire', 'crime'] },
+  { field: 'incidentLat',   required: true,  type: 'number', latitude: true },
+  { field: 'incidentLng',   required: true,  type: 'number', longitude: true },
+  { field: 'deviceId',      required: true,  type: 'string', minLength: 1, maxLength: 200 },
+  { field: 'deviceLat',     required: false, type: 'number', latitude: true },
+  { field: 'deviceLng',     required: false, type: 'number', longitude: true },
+  { field: 'reporterName',  required: false, type: 'string', maxLength: 200 },
+  { field: 'reporterPhone', required: false, type: 'string', minLength: 7, maxLength: 20 },
+  { field: 'description',   required: false, type: 'string', maxLength: 2000 },
+  { field: 'landmark',      required: false, type: 'string', maxLength: 500 },
+  { field: 'address',       required: false, type: 'string', maxLength: 500 },
+  { field: 'isAnonymous',   required: false, type: 'boolean' },
+];
+
 // ── Helper to build a standard error response ────────────────────────────────
 
 export function validationErrorResponse(errors: FieldError[]) {

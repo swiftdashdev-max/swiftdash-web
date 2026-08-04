@@ -26,6 +26,8 @@ import {
   BookOpen,
   Wallet,
   Activity,
+  Siren,
+  ClipboardList,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,7 +44,7 @@ import { createClient } from '@/lib/supabase/client';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useUserContext } from '@/lib/supabase/user-context';
 
-const navigation = [
+const deliveryNavigation = [
   { name: 'Dashboard', href: '/business/dashboard', icon: LayoutDashboard },
   { name: 'Orders', href: '/business/orders', icon: Package },
   { name: 'Dispatch', href: '/business/dispatch', icon: MapPin },
@@ -53,6 +55,27 @@ const navigation = [
   { name: 'Earnings', href: '/business/driver-earnings', icon: Wallet },
 ];
 
+/**
+ * A command center never sees orders, earnings or delivery dispatch — those
+ * pages have no meaning for it. Fleet and Team are shared: the same pages
+ * already adapt themselves when the account is an emergency one.
+ */
+const emergencyNavigation = [
+  { name: 'Console', href: '/business/console', icon: Siren },
+  { name: 'Incidents', href: '/business/incidents', icon: ClipboardList },
+  { name: 'Units', href: '/business/fleet', icon: Truck },
+  { name: 'Team', href: '/business/team', icon: Users },
+  { name: 'Reports', href: '/business/reports', icon: BarChart3 },
+];
+
+/** Pages that fill the viewport themselves and must not get container padding. */
+const FULL_WIDTH_PAGES = [
+  '/business/orders',
+  '/business/tracking',
+  '/business/dispatch',
+  '/business/console',
+];
+
 interface BusinessLayoutProps {
   children: React.ReactNode;
   currentPath?: string;
@@ -60,9 +83,17 @@ interface BusinessLayoutProps {
 
 export default function BusinessLayout({ children, currentPath }: BusinessLayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { user, loading } = useUserContext();
+  const { user, accountType, loading } = useUserContext();
   const router = useRouter();
   const supabase = createClient();
+
+  const isEmergency = accountType === 'emergency';
+  // Until the account type is known, show the delivery set — it is what almost
+  // every account is, and swapping in one direction is less jarring than the
+  // nav appearing to change its mind.
+  const navigation = isEmergency ? emergencyNavigation : deliveryNavigation;
+  const productName = isEmergency ? 'SwiftDash Command' : 'SwiftDash Business';
+  const homeHref = isEmergency ? '/business/console' : '/business/dashboard';
 
   const getInitials = () => {
     if (!user) return 'BZ';
@@ -88,7 +119,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
         <div className="container flex h-16 max-w-screen-2xl items-center justify-between px-4 md:px-6">
           {/* Left Side: Logo & Mobile Menu */}
           <div className="flex items-center gap-2 md:gap-4">
-            <Link href="/business/dashboard" className="flex items-center space-x-2 shrink-0">
+            <Link href={homeHref} className="flex items-center space-x-2 shrink-0">
               <Image
                 src="/assets/images/swiftdash_logo.png"
                 alt="SwiftDash"
@@ -97,7 +128,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
                 className="shrink-0"
               />
               <span className="hidden sm:inline-block font-bold text-sm md:text-base bg-gradient-to-r from-[#1CB8F7] to-[#3B4CCA] bg-clip-text text-transparent whitespace-nowrap">
-                SwiftDash Business
+                {productName}
               </span>
             </Link>
             <Button
@@ -144,7 +175,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 type="search"
-                placeholder="Search orders..."
+                placeholder={isEmergency ? 'Search incidents...' : 'Search orders...'}
                 className="pl-8 w-[180px] xl:w-[250px]"
               />
             </div>
@@ -237,7 +268,7 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
                     height={24}
                   />
                   <span className="font-bold bg-gradient-to-r from-[#1CB8F7] to-[#3B4CCA] bg-clip-text text-transparent">
-                    SwiftDash Business
+                    {productName}
                   </span>
                 </div>
                 <Button
@@ -277,8 +308,8 @@ export default function BusinessLayout({ children, currentPath }: BusinessLayout
 
       {/* Main Content */}
       <main className={
-        currentPath === '/business/orders' || currentPath === '/business/tracking' || currentPath === '/business/dispatch'
-          ? '' // Full width, no padding for orders, tracking, and dispatch pages
+        FULL_WIDTH_PAGES.includes(currentPath ?? '')
+          ? '' // Full width, no padding — these pages manage their own viewport
           : 'container mx-auto px-4 py-6 max-w-screen-2xl'
       }>
         {children}

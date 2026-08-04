@@ -39,6 +39,9 @@ interface Vehicle {
   access_mode: 'private' | 'public';
   current_status: 'idle' | 'busy' | 'offline' | 'maintenance';
   assigned_driver_id: string | null;
+  /** Emergency accounts only — dispatch callsign, e.g. "Ambulance 2". */
+  unit_callsign: string | null;
+  agency_code: string | null;
   total_deliveries: number;
   total_distance_km: number;
   average_rating: number | null;
@@ -110,7 +113,12 @@ export default function FleetPage() {
   const [vehicleForm, setVehicleForm] = useState({
     vehicle_type_id: '', plate_number: '', vehicle_make: '', vehicle_model: '',
     vehicle_year: new Date().getFullYear(), vehicle_color: '', access_mode: 'private' as 'private' | 'public',
+    unit_callsign: '', agency_code: '',
   });
+
+  // Emergency command centers get callsign + agency fields instead of the
+  // public-pool access toggle, which is meaningless for an ambulance.
+  const [isEmergencyAccount, setIsEmergencyAccount] = useState(false);
 
   // Invitation
   const [isGeneratingCode, setIsGeneratingCode] = useState(false);
@@ -147,6 +155,11 @@ export default function FleetPage() {
       const { data: profile } = await supabase.from('user_profiles').select('business_id').eq('id', user.id).single();
       if (!profile?.business_id) { setError('No business account found'); setLoading(false); return; }
       setBusinessId(profile.business_id);
+
+      const { data: account } = await supabase
+        .from('business_accounts').select('account_type').eq('id', profile.business_id).single();
+      setIsEmergencyAccount(account?.account_type === 'emergency');
+
       await Promise.all([
         fetchVehicles(profile.business_id),
         fetchDrivers(profile.business_id),
@@ -272,11 +285,21 @@ export default function FleetPage() {
   };
 
   // ── Vehicle CRUD ─────────────────────────────────────────────────────────
+  /**
+   * Empty strings from the form must become NULL: agency_code has a CHECK
+   * constraint that '' fails, and a blank callsign should be absent, not blank.
+   */
+  const vehiclePayload = () => ({
+    ...vehicleForm,
+    unit_callsign: vehicleForm.unit_callsign.trim() || null,
+    agency_code:   vehicleForm.agency_code || null,
+  });
+
   const handleAddVehicle = async () => {
     if (!businessId) return;
     setError(''); setSuccess('');
     try {
-      const { error: insertError } = await supabase.from('business_fleet').insert([{ business_id: businessId, ...vehicleForm, current_status: 'idle' }]);
+      const { error: insertError } = await supabase.from('business_fleet').insert([{ business_id: businessId, ...vehiclePayload(), current_status: 'idle' }]);
       if (insertError) throw insertError;
       setSuccess('Vehicle added successfully'); setIsAddVehicleOpen(false); resetVehicleForm(); await fetchVehicles(businessId);
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to add vehicle'); }
@@ -286,7 +309,7 @@ export default function FleetPage() {
     if (!businessId || !editingVehicle) return;
     setError(''); setSuccess('');
     try {
-      const { error: updateError } = await supabase.from('business_fleet').update(vehicleForm).eq('id', editingVehicle.id).eq('business_id', businessId);
+      const { error: updateError } = await supabase.from('business_fleet').update(vehiclePayload()).eq('id', editingVehicle.id).eq('business_id', businessId);
       if (updateError) throw updateError;
       setSuccess('Vehicle updated'); setIsEditVehicleOpen(false); setEditingVehicle(null); resetVehicleForm(); await fetchVehicles(businessId);
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to update vehicle'); }
@@ -322,11 +345,11 @@ export default function FleetPage() {
 
   const openEditVehicle = (vehicle: Vehicle) => {
     setEditingVehicle(vehicle);
-    setVehicleForm({ vehicle_type_id: vehicle.vehicle_type_id, plate_number: vehicle.plate_number, vehicle_make: vehicle.vehicle_make, vehicle_model: vehicle.vehicle_model, vehicle_year: vehicle.vehicle_year, vehicle_color: vehicle.vehicle_color, access_mode: vehicle.access_mode });
+    setVehicleForm({ vehicle_type_id: vehicle.vehicle_type_id, plate_number: vehicle.plate_number, vehicle_make: vehicle.vehicle_make, vehicle_model: vehicle.vehicle_model, vehicle_year: vehicle.vehicle_year, vehicle_color: vehicle.vehicle_color, access_mode: vehicle.access_mode, unit_callsign: vehicle.unit_callsign ?? '', agency_code: vehicle.agency_code ?? '' });
     setIsEditVehicleOpen(true);
   };
 
-  const resetVehicleForm = () => setVehicleForm({ vehicle_type_id: '', plate_number: '', vehicle_make: '', vehicle_model: '', vehicle_year: new Date().getFullYear(), vehicle_color: '', access_mode: 'private' });
+  const resetVehicleForm = () => setVehicleForm({ vehicle_type_id: '', plate_number: '', vehicle_make: '', vehicle_model: '', vehicle_year: new Date().getFullYear(), vehicle_color: '', access_mode: 'private', unit_callsign: '', agency_code: '' });
 
   // ── Driver CRUD ───────────────────────────────────────────────────────────
   const handleAddDriver = async () => {
@@ -535,17 +558,47 @@ export default function FleetPage() {
         <div><Label>Year</Label><Input type="number" value={vehicleForm.vehicle_year} onChange={e => setVehicleForm({ ...vehicleForm, vehicle_year: parseInt(e.target.value) })} /></div>
         <div><Label>Color</Label><Input value={vehicleForm.vehicle_color} onChange={e => setVehicleForm({ ...vehicleForm, vehicle_color: e.target.value })} placeholder="White" /></div>
       </div>
-      <div className="flex items-center justify-between rounded-lg border p-3 bg-gray-50 dark:bg-gray-800">
-        <div>
-          <p className="text-sm font-medium">Access Mode</p>
-          <p className="text-xs text-gray-500">{vehicleForm.access_mode === 'private' ? 'Only for your deliveries' : 'Available to global pool when idle'}</p>
+      {isEmergencyAccount ? (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Callsign</Label>
+            <Input
+              value={vehicleForm.unit_callsign}
+              onChange={e => setVehicleForm({ ...vehicleForm, unit_callsign: e.target.value })}
+              placeholder="Ambulance 2"
+            />
+            <p className="mt-1 text-xs text-gray-500">Shown to dispatchers instead of a name.</p>
+          </div>
+          <div>
+            <Label>Agency</Label>
+            <Select
+              value={vehicleForm.agency_code}
+              onValueChange={v => setVehicleForm({ ...vehicleForm, agency_code: v })}
+            >
+              <SelectTrigger><SelectValue placeholder="Select agency" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="CDRRMO_AMBULANCE">CDRRMO — Ambulance</SelectItem>
+                <SelectItem value="BFP">BFP — Fire</SelectItem>
+                <SelectItem value="PNP">PNP — Police</SelectItem>
+                <SelectItem value="CHO">CHO — Health</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-gray-500">Which incidents this unit answers.</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">Private</span>
-          <Switch checked={vehicleForm.access_mode === 'public'} onCheckedChange={c => setVehicleForm({ ...vehicleForm, access_mode: c ? 'public' : 'private' })} />
-          <span className="text-xs text-gray-500">Public</span>
+      ) : (
+        <div className="flex items-center justify-between rounded-lg border p-3 bg-gray-50 dark:bg-gray-800">
+          <div>
+            <p className="text-sm font-medium">Access Mode</p>
+            <p className="text-xs text-gray-500">{vehicleForm.access_mode === 'private' ? 'Only for your deliveries' : 'Available to global pool when idle'}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">Private</span>
+            <Switch checked={vehicleForm.access_mode === 'public'} onCheckedChange={c => setVehicleForm({ ...vehicleForm, access_mode: c ? 'public' : 'private' })} />
+            <span className="text-xs text-gray-500">Public</span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 

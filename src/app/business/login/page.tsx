@@ -41,7 +41,7 @@ export default function BusinessLogin() {
       // Verify user is a business user
       const { data: profile, error: profileError } = await supabase
         .from('user_profiles')
-        .select('user_type')
+        .select('user_type, status')
         .eq('id', data.user.id)
         .single();
 
@@ -52,6 +52,17 @@ export default function BusinessLogin() {
       if (profile.user_type !== 'business') {
         await supabase.auth.signOut();
         throw new Error('This account is not a business account. Please use the correct login portal.');
+      }
+
+      // Dispatcher accounts start pending and must be approved before first sign-in.
+      if (profile.status === 'pending') {
+        await supabase.auth.signOut();
+        throw new Error('This account is awaiting approval. An administrator will activate it shortly.');
+      }
+
+      if (profile.status && profile.status !== 'active') {
+        await supabase.auth.signOut();
+        throw new Error('This account is not active. Please contact your administrator.');
       }
 
       // Redirect to dashboard
