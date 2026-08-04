@@ -455,7 +455,13 @@ export default function TrackingPage() {
 
   // Ably real-time connection
   const { isConnected } = useAblyConnectionState();
-  const deliveryIds = deliveries.map(d => d.id);
+  // Only deliveries that can actually have a live position. Subscribing to a
+  // finished one attaches a channel nothing will ever publish to, and the token
+  // that authorises this connection is scoped to live work only — so those
+  // channels would be refused rather than merely silent.
+  const deliveryIds = deliveries
+    .filter(d => d.driver_id && !['delivered', 'cancelled', 'pending'].includes(d.status))
+    .map(d => d.id);
   const { locations: driverLocations } = useInterpolatedMultipleDriverLocations(deliveryIds);
 
   // Real-time subscription for delivery status changes

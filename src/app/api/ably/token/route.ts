@@ -43,10 +43,25 @@ if (process.env.NEXT_PUBLIC_ABLY_CLIENT_KEY) {
   );
 }
 
-/** Deliveries whose driver is actually moving. Nothing else has a live channel. */
-const TRACKABLE_DELIVERY_STATUSES = [
+/**
+ * What the *customer* tracking page watches — mirrors the `shouldTrackDriver`
+ * check in src/app/track/[trackingNumber]/page.tsx. Keep the two in step.
+ */
+const PUBLIC_TRACKABLE_STATUSES = [
   'driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination',
 ];
+
+/**
+ * What the *operator* views watch — mirrors the filter in dispatch-map-view.tsx:
+ * anything with a driver that has not finished.
+ *
+ * Deliberately an exclusion rule rather than an allow-list. An allow-list here
+ * silently drifts from the client: a status nobody remembered to add (there are
+ * already `failed_attempt` deliveries in the data) would be subscribed to by the
+ * map and refused by the token, and a refused channel simply never attaches —
+ * no error, just a driver who stops moving on the map.
+ */
+const FINISHED_DELIVERY_STATUSES = ['delivered', 'cancelled', 'pending'];
 
 const OPEN_INCIDENT_STATUSES = ['submitted', 'dispatched', 'en_route', 'on_scene'];
 
@@ -123,7 +138,7 @@ export async function POST(req: NextRequest) {
 
     // A token is refused rather than issued empty, so the client can tell
     // "you may not watch this" apart from "there is nothing to watch yet".
-    if (!delivery || !TRACKABLE_DELIVERY_STATUSES.includes(delivery.status)) {
+    if (!delivery || !PUBLIC_TRACKABLE_STATUSES.includes(delivery.status)) {
       return NextResponse.json(
         { error: 'Nothing to track for that number.', code: 'NOT_TRACKABLE' },
         { status: 404 }
@@ -187,7 +202,11 @@ export async function POST(req: NextRequest) {
         .from('deliveries')
         .select('id')
         .eq('business_id', profile.business_id)
-        .in('status', TRACKABLE_DELIVERY_STATUSES)
+        .not('driver_id', 'is', null)
+        .not('status', 'in', `(${FINISHED_DELIVERY_STATUSES.join(',')})`)
+        // Newest first, so that if a busy account ever hits the channel cap it
+        // loses its stalest work rather than whatever just went out the door.
+        .order('created_at', { ascending: false })
         .limit(MAX_CHANNELS),
       supabase
         .from('emergency_incidents')
