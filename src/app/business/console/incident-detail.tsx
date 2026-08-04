@@ -1,18 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import {
-  AlertTriangle,
-  Phone,
-  Radio,
-  Send,
-  X,
-  Link2,
-  ChevronDown,
-} from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
-import { IncidentMap } from './incident-map';
+import { AlertTriangle, Phone, Radio, Send, X, Link2, ChevronDown } from 'lucide-react';
 import { CopyButton } from './incident-strip';
+import type { ConsoleActions } from './use-console-data';
 import {
   Incident,
   Unit,
@@ -36,15 +27,13 @@ export function IncidentDetail({
   incident,
   units,
   now,
-  onChanged,
+  actions,
 }: {
   incident: Incident;
   units: Unit[];
   now: number;
-  onChanged: () => void;
+  actions: ConsoleActions;
 }) {
-  const { toast } = useToast();
-  const [busy, setBusy] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [closing, setClosing] = useState(false);
 
@@ -53,6 +42,7 @@ export function IncidentDetail({
   const liveAssignments = assignments.filter((a) => LIVE_ASSIGNMENT.includes(a.status));
   const pastAssignments = assignments.filter((a) => !LIVE_ASSIGNMENT.includes(a.status));
   const isClosed = ['resolved', 'cancelled', 'rejected'].includes(incident.status);
+  const { busy } = actions;
 
   const drift =
     incident.device_lat != null && incident.device_lng != null
@@ -61,38 +51,6 @@ export function IncidentDetail({
           Number(incident.incident_lat), Number(incident.incident_lng)
         ) * 1000
       : null;
-
-  async function post(url: string, payload: unknown, successTitle: string) {
-    setBusy(url + JSON.stringify(payload));
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        toast({
-          title: 'That did not go through',
-          description: json.error ?? 'Please try again.',
-          variant: 'destructive',
-        });
-        return false;
-      }
-      toast({ title: successTitle });
-      onChanged();
-      return true;
-    } catch {
-      toast({
-        title: 'No connection',
-        description: 'The console could not reach the server. Check the network and retry.',
-        variant: 'destructive',
-      });
-      return false;
-    } finally {
-      setBusy(null);
-    }
-  }
 
   // Units already committed to this incident are not offered again; the rest
   // are ranked by proximity, with the nearest few shown and the tail folded away.
@@ -104,18 +62,11 @@ export function IncidentDetail({
     <div className="flex h-full flex-col overflow-hidden bg-background">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="shrink-0 border-b border-border">
-        <div className="flex items-center gap-3 px-5 py-3">
-          <span
-            aria-hidden
-            className="h-9 w-1.5 shrink-0"
-            style={{ backgroundColor: hue }}
-          />
+        <div className="flex items-center gap-3 px-4 py-3">
+          <span aria-hidden className="h-9 w-1.5 shrink-0" style={{ backgroundColor: hue }} />
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1
-                className="text-sm font-bold uppercase tracking-[0.12em]"
-                style={{ color: hue }}
-              >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <h1 className="text-sm font-bold uppercase tracking-[0.12em]" style={{ color: hue }}>
                 {TYPE_LABEL[incident.incident_type]}
               </h1>
               {incident.severity && (
@@ -150,18 +101,14 @@ export function IncidentDetail({
         </div>
 
         {(incident.flagged_for_review || (drift != null && drift > PIN_DRIFT_M)) && (
-          <div className="flex items-start gap-2 border-t border-border bg-[#F26430]/10 px-5 py-2 text-[12px] text-foreground">
+          <div className="flex items-start gap-2 border-t border-border bg-[#F26430]/10 px-4 py-2 text-[12px] leading-relaxed">
             <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-[#F26430]" />
             <span>
               {drift != null && drift > PIN_DRIFT_M && (
-                <>
-                  Pin sits {Math.round(drift)}m from the reporter&apos;s device.{' '}
-                </>
+                <>Pin sits {Math.round(drift)}m from the reporter&apos;s device. </>
               )}
               {(incident.reports_from_device_24h ?? 0) > 1 && (
-                <>
-                  {incident.reports_from_device_24h} reports from this device in 24 hours.{' '}
-                </>
+                <>{incident.reports_from_device_24h} reports from this device in 24 hours. </>
               )}
               {incident.flagged_for_review && <>Flagged for review — verify before committing units.</>}
             </span>
@@ -171,26 +118,21 @@ export function IncidentDetail({
 
       {/* ── Body ───────────────────────────────────────────────────────────── */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="h-64 border-b border-border">
-          <IncidentMap incident={incident} units={units} />
-        </div>
-
         <Section title="Location">
-          <p className="text-[13px] leading-relaxed text-foreground">
-            {incident.address || 'No address given'}
-          </p>
+          <p className="text-[13px] leading-relaxed">{incident.address || 'No address given'}</p>
           {incident.landmark && (
             <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
               Landmark: {incident.landmark}
             </p>
           )}
+          <p className="mt-1.5 font-mono text-[11px] tabular-nums text-muted-foreground">
+            {Number(incident.incident_lat).toFixed(5)}, {Number(incident.incident_lng).toFixed(5)}
+          </p>
         </Section>
 
         {incident.description && (
           <Section title="What was reported">
-            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
-              {incident.description}
-            </p>
+            <p className="whitespace-pre-wrap text-[13px] leading-relaxed">{incident.description}</p>
           </Section>
         )}
 
@@ -199,7 +141,7 @@ export function IncidentDetail({
             <p className="text-[13px] text-muted-foreground">Reported anonymously.</p>
           ) : (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
-              <span className="text-foreground">{incident.reporter_name || 'Name not given'}</span>
+              <span>{incident.reporter_name || 'Name not given'}</span>
               {incident.reporter_phone && (
                 <a
                   href={`tel:${incident.reporter_phone}`}
@@ -225,24 +167,21 @@ export function IncidentDetail({
         <Section title={`Units on this call (${liveAssignments.length})`}>
           {liveAssignments.length === 0 && (
             <p className="text-[13px] text-muted-foreground">
-              Nobody is assigned. {isClosed ? '' : 'Send a unit below.'}
+              Nobody is assigned.{' '}
+              {isClosed ? '' : 'Send one below, or click a highlighted unit on the map.'}
             </p>
           )}
 
           <div className="divide-y divide-border">
             {liveAssignments.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 py-2">
+              <div key={a.id} className="flex items-center gap-2.5 py-2">
                 <Radio className="h-3.5 w-3.5 shrink-0 text-[#1CB8F7]" />
                 <div className="min-w-0">
-                  <div className="font-mono text-[13px] font-semibold">
-                    {a.unit_callsign ?? 'Unit'}
-                  </div>
+                  <div className="font-mono text-[13px] font-semibold">{a.unit_callsign ?? 'Unit'}</div>
                   <div className="text-[11px] text-muted-foreground">
                     {ASSIGNMENT_LABEL[a.status]}
                     {a.agency_code ? ` · ${AGENCY_LABEL[a.agency_code]}` : ''}
-                    {a.status !== 'on_scene' && a.eta_minutes != null
-                      ? ` · ETA ${a.eta_minutes} min`
-                      : ''}
+                    {a.status !== 'on_scene' && a.eta_minutes != null ? ` · ETA ${a.eta_minutes} min` : ''}
                   </div>
                 </div>
                 <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">
@@ -250,10 +189,8 @@ export function IncidentDetail({
                 </span>
                 <button
                   type="button"
-                  disabled={busy !== null}
-                  onClick={() =>
-                    post('/api/emergency/stand-down', { assignmentId: a.id }, `${a.unit_callsign ?? 'Unit'} stood down`)
-                  }
+                  disabled={busy}
+                  onClick={() => actions.standDown(a.id, a.unit_callsign ?? 'Unit')}
                   className="shrink-0 rounded-sm border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-[#E5484D] hover:text-[#E5484D] disabled:opacity-40"
                 >
                   Stand down
@@ -265,10 +202,7 @@ export function IncidentDetail({
           {pastAssignments.length > 0 && (
             <div className="mt-3 space-y-1 border-t border-border pt-2">
               {pastAssignments.map((a) => (
-                <div
-                  key={a.id}
-                  className="flex items-baseline gap-2 font-mono text-[11px] text-muted-foreground"
-                >
+                <div key={a.id} className="flex items-baseline gap-2 font-mono text-[11px] text-muted-foreground">
                   <span className="font-semibold">{a.unit_callsign ?? 'Unit'}</span>
                   <span>{ASSIGNMENT_LABEL[a.status].toLowerCase()}</span>
                   {a.close_reason && <span className="truncate">— {a.close_reason}</span>}
@@ -284,7 +218,7 @@ export function IncidentDetail({
           hint={
             isClosed
               ? 'This call is closed. Assigning a unit reopens it and is recorded.'
-              : 'Nearest first. Distance is straight-line from the last position reported.'
+              : 'Nearest first. The top three are drawn on the map.'
           }
         >
           {available.length === 0 ? (
@@ -294,7 +228,7 @@ export function IncidentDetail({
           ) : (
             <div className="divide-y divide-border">
               {shown.map((u) => (
-                <div key={u.id} className="flex items-center gap-3 py-2">
+                <div key={u.id} className="flex items-center gap-2.5 py-2">
                   <span
                     aria-hidden
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -307,6 +241,7 @@ export function IncidentDetail({
                       {u.agency ? AGENCY_LABEL[u.agency] : 'Unassigned agency'}
                       {u.committedTo ? ` · on ${u.committedTo.reference}` : ''}
                       {!u.isOnline ? ' · offline' : ''}
+                      {u.lat == null ? ' · no position' : ''}
                     </div>
                   </div>
                   <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
@@ -314,14 +249,8 @@ export function IncidentDetail({
                   </span>
                   <button
                     type="button"
-                    disabled={busy !== null || !u.responderId}
-                    onClick={() =>
-                      post(
-                        '/api/emergency/dispatch',
-                        { incidentId: incident.id, responderId: u.responderId },
-                        `${u.callsign} dispatched`
-                      )
-                    }
+                    disabled={busy || !u.responderId}
+                    onClick={() => actions.dispatch(incident.id, u.responderId!, u.callsign)}
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-sm bg-gradient-to-r from-[#1CB8F7] to-[#3B4CCA] px-2.5 py-1.5 text-[11px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
                   >
                     <Send className="h-3 w-3" />
@@ -349,14 +278,10 @@ export function IncidentDetail({
           <Section title="Close out">
             {closing ? (
               <CloseForm
-                busy={busy !== null}
+                busy={busy}
                 onCancel={() => setClosing(false)}
                 onSubmit={async (outcome, notes) => {
-                  const ok = await post(
-                    '/api/emergency/close',
-                    { incidentId: incident.id, outcome, notes },
-                    `${incident.reference_number} closed as ${outcome}`
-                  );
+                  const ok = await actions.close(incident.id, outcome, notes, incident.reference_number);
                   if (ok) setClosing(false);
                 }}
               />
@@ -375,9 +300,7 @@ export function IncidentDetail({
 
         {isClosed && incident.closure_reason && (
           <Section title="Closure">
-            <p className="text-[13px] leading-relaxed text-muted-foreground">
-              {incident.closure_reason}
-            </p>
+            <p className="text-[13px] leading-relaxed text-muted-foreground">{incident.closure_reason}</p>
           </Section>
         )}
       </div>
@@ -395,10 +318,8 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border-b border-border px-5 py-3.5">
-      <h2 className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-        {title}
-      </h2>
+    <section className="border-b border-border px-4 py-3.5">
+      <h2 className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">{title}</h2>
       {hint && <p className="mt-0.5 text-[11px] text-muted-foreground/80">{hint}</p>}
       <div className="mt-2">{children}</div>
     </section>
@@ -440,9 +361,7 @@ function CloseForm({
             }`}
           >
             <span className="block text-[12px] font-semibold">{o.label}</span>
-            <span className="mt-0.5 block text-[10px] leading-tight text-muted-foreground">
-              {o.hint}
-            </span>
+            <span className="mt-0.5 block text-[10px] leading-tight text-muted-foreground">{o.hint}</span>
           </button>
         ))}
       </div>

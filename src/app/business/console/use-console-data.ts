@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useToast } from '@/hooks/use-toast';
 import {
   Incident,
   Unit,
@@ -245,6 +246,65 @@ export function useUnits(
 
   return { units, loading, reload: load };
 }
+
+/**
+ * The three things a dispatcher can do to a call.
+ *
+ * Lifted out of the detail pane because the map dispatches too, and both
+ * surfaces must go through exactly the same request, error handling and
+ * refresh — a unit sent from the map is not a different kind of dispatch.
+ */
+export function useConsoleActions(onChanged: () => void) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const post = useCallback(
+    async (url: string, payload: unknown, successTitle: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast({
+            title: 'That did not go through',
+            description: json.error ?? 'Please try again.',
+            variant: 'destructive',
+          });
+          return false;
+        }
+        toast({ title: successTitle });
+        onChanged();
+        return true;
+      } catch {
+        toast({
+          title: 'No connection',
+          description: 'The console could not reach the server. Check the network and retry.',
+          variant: 'destructive',
+        });
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [onChanged, toast]
+  );
+
+  return {
+    busy,
+    dispatch: (incidentId: string, responderId: string, callsign: string) =>
+      post('/api/emergency/dispatch', { incidentId, responderId }, `${callsign} dispatched`),
+    standDown: (assignmentId: string, callsign: string) =>
+      post('/api/emergency/stand-down', { assignmentId }, `${callsign} stood down`),
+    close: (incidentId: string, outcome: string, notes: string, reference: string) =>
+      post('/api/emergency/close', { incidentId, outcome, notes }, `${reference} closed as ${outcome}`),
+  };
+}
+
+export type ConsoleActions = ReturnType<typeof useConsoleActions>;
 
 /** A clock that ticks once a second, for elapsed-time displays. */
 export function useNow(): number {

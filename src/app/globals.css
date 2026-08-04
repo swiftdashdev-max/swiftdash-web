@@ -103,3 +103,79 @@
     transition: none !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Emergency console map markers.
+
+   These elements are created imperatively by mapbox-gl, so they sit outside
+   Tailwind's reach and are styled here instead. Everything is scoped under
+   .cmap- to keep it clear that it belongs to one surface.
+
+   The global transition rule above animates stroke and opacity on every
+   element, which fights the elapsed-time ring and the candidate pulse — so
+   marker internals opt out explicitly.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.cmap-inc, .cmap-inc *, .cmap-unit, .cmap-unit * { transition: none; }
+
+/* ── Incident: a crosshair, because the point is a coordinate ─────────────── */
+.cmap-inc { cursor: pointer; }
+.cmap-inc .halo { fill: var(--cmap-hue); opacity: 0; transition: opacity .18s ease; }
+.cmap-inc:hover .halo { opacity: .10; }
+.cmap-inc[data-selected="true"] .halo { opacity: .16; }
+.cmap-inc .track { fill: none; stroke: var(--cmap-hue); stroke-width: 1.5; opacity: .22; }
+/* Fills over ten minutes since the report. The longest-waiting call is the
+   loudest thing on the map, and nothing has to blink to say so. */
+.cmap-inc .ring { fill: none; stroke: var(--cmap-hue); stroke-width: 2.5; }
+.cmap-inc .cross { stroke: var(--cmap-hue); stroke-width: 1.4; opacity: .9; }
+.cmap-inc .core { fill: var(--cmap-hue); }
+.cmap-inc .ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px; fill: hsl(var(--muted-foreground));
+  paint-order: stroke; stroke: hsl(var(--background)); stroke-width: 3px;
+}
+
+/* ── Unit: the callsign itself is the marker ──────────────────────────────── */
+.cmap-unit { position: relative; padding-bottom: 9px; cursor: default; }
+.cmap-unit::after {
+  content: ""; position: absolute; left: 50%; bottom: 0; width: 1px; height: 9px;
+  background: hsl(var(--border)); transform: translateX(-50%);
+}
+.cmap-unit .plate {
+  display: block; padding: 3px 6px; border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; font-weight: 600; line-height: 1; letter-spacing: .03em;
+  white-space: nowrap;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 1px 3px rgb(0 0 0 / .3);
+}
+.cmap-unit[data-state="committed"] .plate {
+  background: #3B4CCA; border-color: #3B4CCA; color: #fff;
+}
+.cmap-unit[data-state="candidate"] { cursor: pointer; }
+.cmap-unit[data-state="candidate"] .plate {
+  border-color: #1CB8F7; border-width: 1.5px; color: #1CB8F7;
+}
+.cmap-unit[data-state="candidate"]::before {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+  border: 1.5px solid #1CB8F7; animation: cmap-ripple 2s ease-out infinite;
+}
+@keyframes cmap-ripple {
+  0%   { transform: scale(.6); opacity: .6; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmap-unit[data-state="candidate"]::before { animation: none; opacity: .3; }
+}
+.cmap-unit[data-state="offline"] .plate { opacity: .5; }
+
+/* ── Dispatch confirm, anchored to the plate ──────────────────────────────── */
+.cmap-popup .mapboxgl-popup-content {
+  padding: 10px; border-radius: 2px;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border)); box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+}
+.cmap-popup .mapboxgl-popup-tip { display: none; }
+.cmap-popup .mapboxgl-popup-close-button { display: none; }

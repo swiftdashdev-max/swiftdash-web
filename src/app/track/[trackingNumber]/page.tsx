@@ -233,8 +233,12 @@ export default function TrackingPage() {
 
   // Subscribe to driver location updates via Ably
   const shouldTrackDriver = delivery?.status && ['driver_assigned', 'pickup_arrived', 'package_collected', 'in_transit', 'at_destination'].includes(delivery.status);
+  // This page is public — the viewer has no session, so live tracking is
+  // authorised by the tracking number they already hold. The server checks it
+  // and issues a token good for this one delivery's channel.
   const { location: driverLocation, isConnected: driverConnected } = useInterpolatedDriverLocation(
-    shouldTrackDriver ? delivery?.id || null : null
+    shouldTrackDriver ? delivery?.id || null : null,
+    { kind: 'delivery', trackingNumber }
   );
 
   // Fetch delivery data

@@ -3,66 +3,125 @@
 import Ably from 'ably';
 import { useEffect, useState, useRef, useCallback } from 'react';
 
-// Ably client key from environment variable
-// TODO: Get this key from driver team - should be same key they use
-// Channel strategy: business uses 'tracking:{deliveryId}', customer uses 'delivery:{deliveryId}'
-const ABLY_CLIENT_KEY = process.env.NEXT_PUBLIC_ABLY_CLIENT_KEY || '';
+/**
+ * How this client proves what it may listen to.
+ *
+ * The browser holds no Ably key. It asks /api/ably/token, which checks the
+ * claim and returns a token scoped to those channels only, subscribe-only, and
+ * time-limited. A copied token is worth nothing beyond what its holder could
+ * already see.
+ *
+ *   business  — the signed-in operator's own deliveries and incidents (default)
+ *   delivery  — one delivery, proven by its tracking number
+ *   emergency — one incident, proven by its tracking token
+ */
+export type AblyScope =
+  | { kind: 'business' }
+  | { kind: 'delivery'; trackingNumber: string }
+  | { kind: 'emergency'; trackingToken: string };
 
-// Singleton Ably client instance
-let ablyClientInstance: Ably.Realtime | null = null;
+const DEFAULT_SCOPE: AblyScope = { kind: 'business' };
+
+/** Channel names are shared with the driver app; do not rename unilaterally. */
+export const trackingChannel = (id: string) => `tracking:${id}`;
 
 /**
- * Get or create Ably Realtime client instance
- * Uses singleton pattern to avoid multiple connections
+ * One connection per scope rather than one overall. A page only ever uses a
+ * single scope, and mixing them would mean a public viewer sharing a connection
+ * whose token was minted for an operator.
  */
-export function getAblyClient(): Ably.Realtime {
-  if (!ablyClientInstance) {
-    if (!ABLY_CLIENT_KEY) {
-      console.warn('⚠️ NEXT_PUBLIC_ABLY_CLIENT_KEY not set. Real-time tracking will not work.');
-      console.warn('📝 Add to .env.local: NEXT_PUBLIC_ABLY_CLIENT_KEY=your_ably_client_key');
-    }
+const clients = new Map<string, Ably.Realtime>();
 
-    ablyClientInstance = new Ably.Realtime({
-      key: ABLY_CLIENT_KEY,
-      clientId: `business-admin-${Math.random().toString(36).substring(7)}`,
-      recover: (lastConnectionDetails, cb) => {
-        // Attempt to recover connection
-        cb(true);
-      },
-      disconnectedRetryTimeout: 3000,
-      suspendedRetryTimeout: 10000,
-    });
+const scopeKey = (scope: AblyScope) =>
+  scope.kind === 'business'
+    ? 'business'
+    : scope.kind === 'delivery'
+      ? `delivery:${scope.trackingNumber}`
+      : `emergency:${scope.trackingToken}`;
 
-    // Connection state logging
-    ablyClientInstance.connection.on('connected', () => {
-      console.log('✅ Ably connected');
-    });
+/**
+ * Get or create the Ably client for a scope.
+ *
+ * The auth callback runs on connect and again whenever the token nears expiry,
+ * so an operator's capabilities pick up calls that arrived after they signed in.
+ */
+export function getAblyClient(scope: AblyScope = DEFAULT_SCOPE): Ably.Realtime {
+  const key = scopeKey(scope);
+  const existing = clients.get(key);
+  if (existing) return existing;
 
-    ablyClientInstance.connection.on('disconnected', () => {
-      console.warn('⚠️ Ably disconnected');
-    });
+  const client = new Ably.Realtime({
+    authCallback: async (_tokenParams, callback) => {
+      try {
+        const res = await fetch('/api/ably/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(
+            scope.kind === 'business'
+              ? { scope: 'business' }
+              : scope.kind === 'delivery'
+                ? { scope: 'delivery', trackingNumber: scope.trackingNumber }
+                : { scope: 'emergency', trackingToken: scope.trackingToken }
+          ),
+        });
 
-    ablyClientInstance.connection.on('failed', (error) => {
-      console.error('❌ Ably connection failed:', error);
-    });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          // Passing the error on means Ably stops retrying a refusal it cannot
+          // fix. "Nothing live to track" is an answer, not a transient fault.
+          callback(body.error ?? `Token request failed (${res.status})`, null);
+          return;
+        }
 
-    ablyClientInstance.connection.on('suspended', () => {
-      console.warn('⏸️ Ably connection suspended');
-    });
-  }
+        callback(null, await res.json());
+      } catch (err) {
+        // Ably's callback takes a message or an ErrorInfo, not an Error.
+        callback(err instanceof Error ? err.message : 'Token request failed', null);
+      }
+    },
+    recover: (lastConnectionDetails, cb) => {
+      cb(true);
+    },
+    disconnectedRetryTimeout: 3000,
+    suspendedRetryTimeout: 10000,
+  });
 
-  return ablyClientInstance;
+  client.connection.on('failed', (error) => {
+    console.error('Ably connection failed:', error);
+  });
+
+  clients.set(key, client);
+  return client;
 }
 
 /**
- * Close Ably connection (cleanup)
+ * Re-request a token immediately rather than waiting for the current one to
+ * expire. Call this when a channel is refused: an operator's token lists the
+ * work that existed when it was minted, so a call that arrived since will be
+ * missing from it until the next refresh.
  */
-export function closeAblyConnection() {
-  if (ablyClientInstance) {
-    ablyClientInstance.close();
-    ablyClientInstance = null;
-    console.log('🔌 Ably connection closed');
+export async function refreshAblyAuth(scope: AblyScope = DEFAULT_SCOPE): Promise<void> {
+  const client = clients.get(scopeKey(scope));
+  if (!client) return;
+  try {
+    await client.auth.authorize();
+  } catch (err) {
+    console.error('Ably re-authorization failed:', err);
   }
+}
+
+/**
+ * Close Ably connections (cleanup)
+ */
+export function closeAblyConnection(scope?: AblyScope) {
+  if (scope) {
+    const key = scopeKey(scope);
+    clients.get(key)?.close();
+    clients.delete(key);
+    return;
+  }
+  for (const client of clients.values()) client.close();
+  clients.clear();
 }
 
 // Type definitions for real-time events
@@ -131,9 +190,12 @@ function distanceMetres(lat1: number, lng1: number, lat2: number, lng2: number):
  * the web side won't re-render, re-route, or re-render the map marker needlessly.
  *
  * @param deliveryId - Delivery ID to track
+ * @param scope - How to authorise. Defaults to the signed-in operator; the
+ *                public tracking page must pass its delivery scope, since an
+ *                anonymous visitor has no session to authorise against.
  * @returns Latest driver location or null
  */
-export function useDriverLocation(deliveryId: string | null) {
+export function useDriverLocation(deliveryId: string | null, scope: AblyScope = DEFAULT_SCOPE) {
   const [location, setLocation] = useState<DriverLocation | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const channelRef = useRef<Ably.RealtimeChannel | null>(null);
@@ -155,8 +217,8 @@ export function useDriverLocation(deliveryId: string | null) {
       return;
     }
 
-    const ably = getAblyClient();
-    const channel = ably.channels.get(`tracking:${deliveryId}`);
+    const ably = getAblyClient(scope);
+    const channel = ably.channels.get(trackingChannel(deliveryId));
     channelRef.current = channel;
 
     const handleLocationUpdate = (message: Ably.Message) => {
@@ -209,7 +271,10 @@ export function useDriverLocation(deliveryId: string | null) {
       lastAcceptedRef.current = null;
       lastAcceptedAtRef.current = 0;
     };
-  }, [deliveryId]);
+    // Keyed on the scope's identity, not the object: callers pass an inline
+    // literal, which would be a new reference every render and would tear the
+    // subscription down and rebuild it on each one.
+  }, [deliveryId, scopeKey(scope)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { location, isConnected };
 }
@@ -564,8 +629,11 @@ function lerp(a: number, b: number, t: number): number {
  *
  * @param deliveryId - Delivery ID to track (pass null to disable)
  */
-export function useInterpolatedDriverLocation(deliveryId: string | null) {
-  const { location: rawLocation, isConnected } = useDriverLocation(deliveryId);
+export function useInterpolatedDriverLocation(
+  deliveryId: string | null,
+  scope: AblyScope = DEFAULT_SCOPE
+) {
+  const { location: rawLocation, isConnected } = useDriverLocation(deliveryId, scope);
 
   // Interpolated output state
   const [location, setLocation] = useState<DriverLocation | null>(null);
