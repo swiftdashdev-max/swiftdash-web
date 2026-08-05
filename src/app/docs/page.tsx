@@ -299,7 +299,9 @@ $response = json_decode(curl_exec($ch), true);`,
 
           <Section id="rate-limits" title="Rate Limits">
             <P>
-              Requests are rate-limited per API key. When exceeded, the API returns <InlineCode>429 RATE_LIMIT_EXCEEDED</InlineCode>. Check the response headers to know your current usage.
+              Requests are rate-limited per API key, in fixed one-minute windows aligned to the
+              clock. Exceed the limit and the API returns <InlineCode>429</InlineCode> with the code{' '}
+              <InlineCode>RATE_LIMIT_EXCEEDED</InlineCode>.
             </P>
             <div className="rounded-lg border border-border overflow-hidden my-4">
               <table className="w-full text-sm">
@@ -307,32 +309,45 @@ $response = json_decode(curl_exec($ch), true);`,
                   <tr className="bg-muted/50 border-b border-border">
                     <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground">Plan</th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground">Requests / min</th>
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground">Requests / hour</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {[
-                    ['Starter',    '60',        '1,000'],
-                    ['Business',   '300',       '10,000'],
-                    ['Enterprise', 'Unlimited', 'Unlimited'],
-                  ].map(([plan, min, hour]) => (
+                    ['Starter',    '60'],
+                    ['Business',   '300'],
+                    ['Enterprise', 'Unlimited'],
+                  ].map(([plan, min]) => (
                     <tr key={plan} className="hover:bg-muted/30">
                       <td className="px-4 py-3 font-medium text-sm">{plan}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground font-mono">{min}</td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground font-mono">{hour}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <P>
+              The limit applies to <InlineCode>/deliveries</InlineCode> and{' '}
+              <InlineCode>/vehicles</InlineCode>. Webhook management endpoints are not limited.
+            </P>
             <ParamTable
-              title="Rate Limit Response Headers"
+              title="Headers returned on a 429"
               params={[
-                { name: 'X-RateLimit-Limit',     type: 'integer', description: 'Maximum requests allowed in the current window.' },
-                { name: 'X-RateLimit-Remaining', type: 'integer', description: 'Requests remaining before you are throttled.' },
-                { name: 'X-RateLimit-Reset',     type: 'unix timestamp', description: 'Time when the window resets.' },
+                { name: 'X-RateLimit-Limit',     type: 'integer', description: 'Requests allowed per minute on your plan.' },
+                { name: 'X-RateLimit-Remaining', type: 'integer', description: 'Requests left in the current window. Zero when you are being throttled.' },
+                { name: 'X-RateLimit-Reset',     type: 'unix timestamp', description: 'When the current window resets and you may resume.' },
+                { name: 'Retry-After',           type: 'integer', description: 'Seconds to wait before retrying. The simplest field to back off against.' },
               ]}
             />
+            <Note variant="info">
+              These headers accompany the <InlineCode>429</InlineCode> only — successful responses
+              do not carry a running count. Back off using <InlineCode>Retry-After</InlineCode>
+              rather than tracking your own usage.
+            </Note>
+            <Note variant="warn">
+              The limiter fails open. If the counter is ever unreachable, requests are allowed
+              through rather than refused &mdash; an API that stops working when its rate limiter
+              breaks has caused more damage than the abuse it was guarding against.
+            </Note>
           </Section>
 
           {/* ════════════ DELIVERIES ════════════ */}

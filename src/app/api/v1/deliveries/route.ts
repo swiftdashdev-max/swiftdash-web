@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { enforceRateLimit } from '@/lib/rate-limit';
 import { getServiceClient } from '@/lib/supabase-service';
 import { dispatchWebhook } from '@/lib/webhook-dispatcher';
 import { validateBody, DELIVERY_CREATE_RULES, validationErrorResponse } from '@/lib/api-validation';
@@ -16,6 +17,9 @@ export async function GET(req: NextRequest) {
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
+
+  const limited = await enforceRateLimit(auth);
+  if (limited) return limited;
 
   const supabase = getServiceClient();
   const { searchParams } = new URL(req.url);
@@ -64,6 +68,9 @@ export async function POST(req: NextRequest) {
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
+
+  const limited = await enforceRateLimit(auth);
+  if (limited) return limited;
 
   let body: Record<string, unknown>;
   try {

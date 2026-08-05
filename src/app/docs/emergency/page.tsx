@@ -746,8 +746,17 @@ if (res.status === 409) {
                 { name: 'No GPS fix',      type: 'flag', description: 'deviceLat and deviceLng were not supplied, so the pinned location could not be corroborated. Sending them is the easiest way to avoid this.' },
                 { name: 'Pin far from GPS', type: 'flag', description: 'The reported location is more than 200 metres from the device’s own fix. Legitimate when reporting something seen at a distance — which is exactly why a human judges it.' },
                 { name: 'Repeat device',   type: 'flag', description: 'Three or more reports from the same deviceId within 24 hours. The count is recorded on the incident.' },
+                { name: 'Repeat phone',    type: 'flag', description: 'Three or more reports carrying the same reporterPhone within 24 hours, counted across devices. Numbers are normalised first, so +639171234567, 09171234567 and 639171234567 are one number. Not applied to anonymous reports, whose phone is never stored.' },
               ]}
             />
+            <Note variant="warn">
+              The phone rule flags; it never blocks. Because the number is not verified, anyone can
+              type anyone else&rsquo;s &mdash; so a limit that refused reports would let one abuser
+              silence a stranger&rsquo;s real emergency. It becomes a far stronger signal once the
+              number is verified with an OTP at the app&rsquo;s end, which is worth doing: a verified
+              phone survives reinstalls and handset changes, which <InlineCode>deviceId</InlineCode>
+              does not.
+            </Note>
             <Note variant="info">
               None of these are rate limits. There is no request throttle on emergency reporting,
               deliberately &mdash; the same person reporting three times in an hour may be describing

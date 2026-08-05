@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { enforceRateLimit } from '@/lib/rate-limit';
 import { getServiceClient } from '@/lib/supabase-service';
 import { dispatchWebhook } from '@/lib/webhook-dispatcher';
 
@@ -17,6 +18,9 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
+
+  const limited = await enforceRateLimit(auth);
+  if (limited) return limited;
 
   const { id } = await ctx.params;
   const supabase = getServiceClient();
@@ -53,6 +57,9 @@ export async function DELETE(req: NextRequest, ctx: RouteContext) {
   if (!auth) {
     return NextResponse.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, { status: 401 });
   }
+
+  const limited = await enforceRateLimit(auth);
+  if (limited) return limited;
 
   const { id } = await ctx.params;
   const supabase = getServiceClient();

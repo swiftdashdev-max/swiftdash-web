@@ -19,6 +19,8 @@ export interface AuthenticatedBusiness {
   /** The business_accounts ID (used on deliveries.business_id) */
   accountId: string | null;
   keyId: string;
+  /** Subscription tier, which decides the rate limit. See @/lib/rate-limit. */
+  tier: string | null;
 }
 
 // ── In-memory auth cache ──────────────────────────────────────────────────────
@@ -108,6 +110,7 @@ export async function authenticateApiKey(
     businessId: data.business_id,
     accountId: data.account_id ?? null,
     keyId: data.key_id,
+    tier: data.tier ?? null,
   };
 
   // ── Cache the result ──────────────────────────────────
