@@ -30,11 +30,137 @@ const LIVE = ['dispatched', 'en_route', 'on_scene'];
 /** A position older than this is not worth drawing on a map. */
 const STALE_FIX_MS = 5 * 60_000;
 
+/**
+ * Incident statuses a command center may relabel. Deliberately the same
+ * `status_labels` map the delivery page uses — the key sets do not overlap, so
+ * one setting drives both surfaces and nobody maintains two lists.
+ */
+const STATUS_LABEL_KEYS = [
+  'submitted', 'dispatched', 'en_route', 'on_scene',
+  'resolved', 'cancelled', 'rejected',
+];
+
+/**
+ * How the command center wants this page to look. The same settings that brand
+ * the delivery tracking page, so a city configures its identity once in one
+ * place and both public surfaces follow.
+ *
+ * Sent as raw preference, not as final styling — the page decides what is safe
+ * to apply. These colours were chosen against a light delivery page, and
+ * several of them (RCERT's near-black body text) would be unreadable here.
+ */
+function buildBranding(raw: unknown) {
+  const settings = (raw ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof settings[k] === 'string' ? (settings[k] as string) : null);
+  const trackingPage = (settings.tracking_page ?? {}) as Record<string, unknown>;
+
+  return {
+    logoUrl:         str('logo_url'),
+    logoSize:        str('logo_size'),
+    logoOnPlate:     settings.logo_bg_transparent !== true,
+    faviconUrl:      str('favicon_url'),
+    tagline:         str('tagline'),
+    headline:        str('tracking_headline'),
+    headerBg:        str('header_bg_color') ?? str('primary_color'),
+    headerText:      str('header_text_color'),
+    bodyText:        str('body_text_color'),
+    accent:          str('accent_color'),
+    pageBg:          str('page_bg_color'),
+    cardBg:          str('card_bg_color'),
+    hidePoweredBy:   settings.hide_powered_by === true,
+    mapStyle:        str('map_style'),
+    showSupport:     trackingPage.show_support_contact !== false,
+    showUnitDetail:  trackingPage.show_driver_info !== false,
+    /**
+     * Only the emergency keys. The delivery labels in the same map describe
+     * parcels and couriers; letting them through would put "Package Collected"
+     * on an incident page.
+     */
+    statusLabels: Object.fromEntries(
+      Object.entries((settings.status_labels ?? {}) as Record<string, unknown>)
+        .filter(([k, v]) => STATUS_LABEL_KEYS.includes(k) && typeof v === 'string' && v.trim() !== '')
+    ) as Record<string, string>,
+  };
+}
+
+/**
+ * A fake incident, so a command center can see its own branding without waiting
+ * for a real emergency to happen to somebody.
+ *
+ * Reached at /track/emergency/preview?bizId=… from the settings page. It
+ * exposes nothing private: the branding, name and phone it echoes back are all
+ * already public on every tracking link this account issues. The incident
+ * itself is invented — the coordinates are the city hall of Roxas, the
+ * reference number says PREVIEW, and nothing here touches real data.
+ */
+async function previewResponse(bizId: string) {
+  const supabase = getServiceClient();
+  const { data: centre } = await supabase
+    .from('business_accounts')
+    .select('business_name, business_phone, settings')
+    .eq('id', bizId)
+    .maybeSingle();
+
+  if (!centre) {
+    return NextResponse.json({ error: 'Not found', code: 'NOT_FOUND' }, { status: 404 });
+  }
+
+  const branding = buildBranding(centre.settings);
+  const now = new Date();
+
+  return NextResponse.json(
+    {
+      referenceNumber: 'RCE-PREVIEW-0000',
+      // No live channel — a preview must never attach to Ably and must never be
+      // mistaken by the page for something worth streaming.
+      channel:      null,
+      status:       'en_route',
+      isActive:     true,
+      incidentType: 'medical',
+      agency:       'CDRRMO_AMBULANCE',
+      address:      'Sample location — this is a preview',
+      landmark:     'Near the city plaza',
+      location:     { lat: 11.5853, lng: 122.7511 },
+      units: [
+        { callsign: 'AMB-01', agency: 'CDRRMO_AMBULANCE', status: 'en_route', etaMinutes: 6 },
+      ],
+      etaMinutes: 6,
+      positions: [{ callsign: 'AMB-01', lat: 11.5893, lng: 122.7551 }],
+      commandCenter: {
+        name:  centre.business_name ?? 'Emergency Command Center',
+        phone: (centre.settings as Record<string, unknown> | null)?.support_phone as string
+               ?? centre.business_phone ?? null,
+      },
+      branding,
+      timestamps: {
+        reported:   new Date(now.getTime() - 4 * 60_000).toISOString(),
+        dispatched: new Date(now.getTime() - 3 * 60_000).toISOString(),
+        accepted:   new Date(now.getTime() - 2 * 60_000).toISOString(),
+        onScene:    null,
+        resolved:   null,
+      },
+      updatedAt: now.toISOString(),
+      isPreview: true,
+    },
+    { status: 200, headers: { 'Cache-Control': 'no-store' } }
+  );
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params;
+
+  // Branding preview, from the settings page. Checked before the length rule
+  // below, which would otherwise reject it.
+  if (token === 'preview') {
+    const bizId = req.nextUrl.searchParams.get('bizId');
+    if (!bizId || !/^[0-9a-f-]{36}$/i.test(bizId)) {
+      return NextResponse.json({ error: 'Not found', code: 'NOT_FOUND' }, { status: 404 });
+    }
+    return previewResponse(bizId);
+  }
 
   // Tracking tokens are long. A short one is not a near miss, so it is refused
   // without touching the database.
@@ -79,13 +205,17 @@ export async function GET(
   const assignments = (incident.incident_assignments ?? []) as unknown as Assignment[];
   const live = assignments.filter((a) => LIVE.includes(a.status));
 
-  // Who to call if this page is not enough. Coming from the command center's
-  // own record rather than hard-coded, so it stays right per city.
+  // Who to call if this page is not enough, and how the page should look.
+  // Both come from the command center's own record rather than hard-coded, so
+  // they stay right per city.
   const { data: centre } = await supabase
     .from('business_accounts')
-    .select('business_name, business_phone')
+    .select('business_name, business_phone, settings')
     .eq('id', incident.command_center_id)
     .maybeSingle();
+
+  const settings = (centre?.settings ?? {}) as Record<string, unknown>;
+  const supportPhone = typeof settings.support_phone === 'string' ? settings.support_phone : null;
 
   // Live positions for units that are actually en route. A unit standing at the
   // station is not interesting, and a stale fix is worse than none — it would
@@ -145,8 +275,11 @@ export async function GET(
       positions,
       commandCenter: {
         name:  centre?.business_name ?? 'Emergency Command Center',
-        phone: centre?.business_phone ?? null,
+        // A dedicated support line wins over the account's own number: it is the
+        // one somebody actually answers.
+        phone: supportPhone ?? centre?.business_phone ?? null,
       },
+      branding: buildBranding(settings),
       timestamps: {
         reported:   incident.created_at,
         dispatched: incident.dispatched_at,

@@ -65,7 +65,10 @@ const emergencyNavigation = [
   { name: 'Incidents', href: '/business/incidents', icon: ClipboardList },
   { name: 'Units', href: '/business/fleet', icon: Truck },
   { name: 'Team', href: '/business/team', icon: Users },
-  { name: 'Reports', href: '/business/reports', icon: BarChart3 },
+  // No Reports tab. /business/reports is delivery analytics — parcels, courier
+  // earnings, delivery SLAs — none of which mean anything to a command center.
+  // Incidents already answers "what happened", including response times. A tab
+  // that leads somewhere irrelevant is worse than one that isn't there.
 ];
 
 /** Pages that fill the viewport themselves and must not get container padding. */

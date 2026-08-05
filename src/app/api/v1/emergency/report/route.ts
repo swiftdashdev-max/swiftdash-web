@@ -147,6 +147,15 @@ export async function POST(req: NextRequest) {
       referenceNumber: incident.referenceNumber,
       status:          'submitted',
       agency:          incident.agency,
+      /**
+       * Returned in its own right, not only buried in the URL below.
+       *
+       * Both follow-up calls the app has to make — polling status and
+       * cancelling — are keyed on this token. Handing back only the URL forced
+       * the caller to string-split it to recover the one value it needs, which
+       * is a parsing step nobody should have to write against an emergency API.
+       */
+      trackingToken:   incident.trackingToken,
       trackingUrl:     `${origin}/track/emergency/${incident.trackingToken}`,
     },
     { status: 201, headers: { 'x-response-time': `${Date.now() - start}ms` } }

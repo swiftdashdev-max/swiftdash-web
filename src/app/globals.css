@@ -179,3 +179,49 @@
 }
 .cmap-popup .mapboxgl-popup-tip { display: none; }
 .cmap-popup .mapboxgl-popup-close-button { display: none; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   scrollbar-none
+
+   The top navigation has always carried this class next to `overflow-x-auto`,
+   but it was never defined — not here, and not by a plugin (only
+   tailwindcss-animate is installed). So the class did nothing and the nav
+   rendered a real horizontal scrollbar, which in dark mode shows as a pale
+   slab across the page directly under the tabs.
+
+   The nav still needs to scroll on narrow screens, so the fix is to hide the
+   bar rather than remove the overflow.
+   ────────────────────────────────────────────────────────────────────────── */
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;      /* Firefox */
+    -ms-overflow-style: none;   /* legacy Edge */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;              /* Chrome, Safari, modern Edge */
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Public emergency tracking page
+
+   Two animations, both load-bearing. The expanding ring marks the stage the
+   incident is actually at, and the same ring in miniature marks the page as
+   live. Nothing here is decoration — someone reading this page needs to know
+   at a glance that it is still moving, without waiting to watch it change.
+   ────────────────────────────────────────────────────────────────────────── */
+@keyframes etrack-ping {
+  0%   { transform: scale(1);   opacity: .5; }
+  70%  { transform: scale(2.6); opacity: 0; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+.etrack-ping {
+  animation: etrack-ping 1.9s cubic-bezier(0, 0, .2, 1) infinite;
+}
+
+/* Someone who has asked for less motion still gets the position — the ring
+   simply stops expanding, leaving a static marker. */
+@media (prefers-reduced-motion: reduce) {
+  .etrack-ping { animation: none; opacity: .35; }
+}

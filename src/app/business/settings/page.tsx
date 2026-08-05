@@ -77,7 +77,8 @@ interface FleetVehicle {
 }
 
 export default function SettingsPage() {
-  const { user, businessId, loading: userLoading } = useUserContext();
+  const { user, businessId, accountType, loading: userLoading } = useUserContext();
+  const isEmergency = accountType === 'emergency';
   const { toast } = useToast();
   const supabase = createClient();
 
@@ -922,7 +923,12 @@ export default function SettingsPage() {
   };
 
   const generateTrackingPreviewUrl = () => {
-    const base = `${window.location.origin}/track/SD-PREVIEW-DEMO`;
+    // A command center has no deliveries, so the delivery demo would show it a
+    // parcel timeline it will never use. Send it to the page its citizens
+    // actually land on.
+    const base = isEmergency
+      ? `${window.location.origin}/track/emergency/preview`
+      : `${window.location.origin}/track/SD-PREVIEW-DEMO`;
     return businessId ? `${base}?bizId=${businessId}` : base;
   };
 
@@ -1538,15 +1544,24 @@ export default function SettingsPage() {
             <div className="space-y-3">
               <Label className="flex items-center gap-2">
                 <Eye className="h-4 w-4" />
-                Customer Visibility
+                {isEmergency ? 'What the public can see' : 'Customer Visibility'}
               </Label>
 
-              {([
-                { label: 'Show driver card', desc: 'Show driver name and avatar on tracking page', value: showDriverInfo, set: setShowDriverInfo },
-                { label: 'Show driver phone number', desc: 'Allow customers to call the driver directly', value: showDriverPhone, set: setShowDriverPhone },
-                { label: 'Show pickup address', desc: 'Show where the delivery was picked up from', value: showPickupAddress, set: setShowPickupAddress },
-                { label: 'Show support contact', desc: 'Show "Need Help?" card with your support number', value: showSupportContact, set: setShowSupportContact },
-              ] as const).map((item) => (
+              {(isEmergency
+                // A command center's tracking page has no driver, no pickup and
+                // no parcel. Only the two toggles that mean something here are
+                // offered, described in its own words.
+                ? [
+                    { label: 'Show the responding unit', desc: 'Show the unit callsign and agency on the public incident page', value: showDriverInfo, set: setShowDriverInfo },
+                    { label: 'Show the call button', desc: 'Show a button to call your command center directly', value: showSupportContact, set: setShowSupportContact },
+                  ]
+                : [
+                    { label: 'Show driver card', desc: 'Show driver name and avatar on tracking page', value: showDriverInfo, set: setShowDriverInfo },
+                    { label: 'Show driver phone number', desc: 'Allow customers to call the driver directly', value: showDriverPhone, set: setShowDriverPhone },
+                    { label: 'Show pickup address', desc: 'Show where the delivery was picked up from', value: showPickupAddress, set: setShowPickupAddress },
+                    { label: 'Show support contact', desc: 'Show "Need Help?" card with your support number', value: showSupportContact, set: setShowSupportContact },
+                  ]
+              ).map((item) => (
                 <div key={item.label} className="flex items-center justify-between p-3 border rounded-lg">
                   <div>
                     <p className="font-medium text-sm">{item.label}</p>
@@ -1633,24 +1648,43 @@ export default function SettingsPage() {
                 <Tag className="h-4 w-4" />
                 Custom Status Labels
               </Label>
-              <p className="text-xs text-muted-foreground -mt-2">Override the step labels shown in the delivery status timeline. Leave blank to use SwiftDash defaults. Plain text only.</p>
+              <p className="text-xs text-muted-foreground -mt-2">
+                {isEmergency
+                  ? 'Override the headline shown to a citizen at each stage of an incident. This is the largest sentence on the public tracking page, so write it the way you would say it out loud. Leave blank to use SwiftDash defaults. Plain text only.'
+                  : 'Override the step labels shown in the delivery status timeline. Leave blank to use SwiftDash defaults. Plain text only.'}
+              </p>
               <div className="space-y-2">
-                {([
-                  { key: 'pending', defaultLabel: 'Order Placed' },
-                  { key: 'driver_assigned', defaultLabel: 'Driver Assigned' },
-                  { key: 'pickup_arrived', defaultLabel: 'Arriving at Pickup' },
-                  { key: 'package_collected', defaultLabel: 'Package Collected' },
-                  { key: 'in_transit', defaultLabel: 'On the Way' },
-                  { key: 'at_destination', defaultLabel: 'Driver Arrived' },
-                  { key: 'delivered', defaultLabel: 'Delivered' },
-                ] as { key: string; defaultLabel: string }[]).map(({ key, defaultLabel }) => (
+                {(isEmergency
+                  ? [
+                      // Keyed on incident status. These keys do not collide with
+                      // the delivery ones, so both live in the same saved map.
+                      { key: 'submitted', defaultLabel: 'Your report has been received' },
+                      { key: 'dispatched', defaultLabel: 'Help is being sent' },
+                      { key: 'en_route', defaultLabel: 'Help is on the way' },
+                      { key: 'on_scene', defaultLabel: 'Help has arrived' },
+                      { key: 'resolved', defaultLabel: 'This emergency has been closed' },
+                      { key: 'cancelled', defaultLabel: 'This report was cancelled' },
+                      { key: 'rejected', defaultLabel: 'No response was sent for this report' },
+                    ]
+                  : [
+                      { key: 'pending', defaultLabel: 'Order Placed' },
+                      { key: 'driver_assigned', defaultLabel: 'Driver Assigned' },
+                      { key: 'pickup_arrived', defaultLabel: 'Arriving at Pickup' },
+                      { key: 'package_collected', defaultLabel: 'Package Collected' },
+                      { key: 'in_transit', defaultLabel: 'On the Way' },
+                      { key: 'at_destination', defaultLabel: 'Driver Arrived' },
+                      { key: 'delivered', defaultLabel: 'Delivered' },
+                    ]
+                ).map(({ key, defaultLabel }) => (
                   <div key={key} className="flex items-center gap-3">
                     <span className="text-xs text-muted-foreground font-mono w-40 shrink-0">{key}</span>
                     <Input
                       value={statusLabels[key] || ''}
                       onChange={(e) => setStatusLabels(prev => ({ ...prev, [key]: e.target.value }))}
                       placeholder={defaultLabel}
-                      maxLength={60}
+                      // An incident headline is a whole sentence, not a timeline
+                      // chip, so it needs more room than a delivery step label.
+                      maxLength={isEmergency ? 90 : 60}
                       className="flex-1"
                     />
                   </div>

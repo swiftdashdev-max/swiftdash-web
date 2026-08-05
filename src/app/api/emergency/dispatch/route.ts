@@ -192,9 +192,29 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (assignError) {
+    // A responder may hold only one live assignment, enforced by a unique
+    // partial index. Rather than report the constraint, find the call they are
+    // already on — "AMB-01 is on RCE-20260804-0007" is something a dispatcher
+    // can act on, where "duplicate key" is not.
     if (assignError.code === '23505') {
+      const { data: busy } = await supabase
+        .from('incident_assignments')
+        .select('unit_callsign, emergency_incidents!inner(reference_number)')
+        .eq('responder_id', responderId)
+        .in('status', ['dispatched', 'en_route', 'on_scene'])
+        .maybeSingle();
+
+      type WithIncident = { reference_number: string } | { reference_number: string }[];
+      const parent = busy?.emergency_incidents as WithIncident | undefined;
+      const reference = Array.isArray(parent) ? parent[0]?.reference_number : parent?.reference_number;
+
       return NextResponse.json(
-        { error: 'That unit is already assigned to this incident.', code: 'ALREADY_ASSIGNED' },
+        {
+          error: reference
+            ? `${busy?.unit_callsign ?? 'That unit'} is already committed to ${reference}. Stand it down first if you need it here.`
+            : 'That unit is already committed to another call.',
+          code: 'ALREADY_ASSIGNED',
+        },
         { status: 409 }
       );
     }

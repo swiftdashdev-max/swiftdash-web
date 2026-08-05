@@ -540,5 +540,19 @@ export function ConsoleMap({
     );
   }
 
-  return <div ref={container} className="h-full w-full" />;
+  return (
+    // The explicit background matters. Between mount and the style finishing,
+    // and if the style fails to load at all, the container has nothing painted
+    // in it — and an unpainted area renders as a white slab in the middle of a
+    // dark console. Giving it the app's own ground means the worst case is a
+    // dark empty panel rather than something that looks broken.
+    <div className="relative h-full w-full bg-background">
+      <div ref={container} className="h-full w-full" />
+      {!ready && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background">
+          <p className="text-[12px] text-muted-foreground">Loading the map…</p>
+        </div>
+      )}
+    </div>
+  );
 }

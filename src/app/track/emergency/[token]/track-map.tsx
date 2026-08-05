@@ -7,7 +7,21 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
 /** The same style the rest of SwiftDash uses, so the maps look like one product. */
-const STYLE = 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex';
+const DEFAULT_STYLE = 'mapbox://styles/swiftdash/cmgtdgxbe000e01st0atdhrex';
+
+/**
+ * The same named styles the delivery tracking page offers, so a command center
+ * that picked "satellite" in settings gets satellite here too. Satellite is a
+ * defensible choice for emergencies — roofs and yards are recognisable to
+ * someone standing outside in a way a street diagram is not.
+ */
+const MAP_STYLES: Record<string, string> = {
+  streets:   'mapbox://styles/mapbox/streets-v12',
+  light:     'mapbox://styles/mapbox/light-v11',
+  dark:      'mapbox://styles/mapbox/dark-v11',
+  satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
+  outdoors:  'mapbox://styles/mapbox/outdoors-v12',
+};
 
 export interface UnitPosition {
   callsign: string | null;
@@ -26,10 +40,13 @@ export function TrackMap({
   incident,
   units,
   hue,
+  mapStyle,
 }: {
   incident: { lat: number; lng: number };
   units: UnitPosition[];
   hue: string;
+  /** A named style from the command center's settings, e.g. "satellite". */
+  mapStyle?: string | null;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -40,15 +57,25 @@ export function TrackMap({
   useEffect(() => {
     if (!container.current || map.current || !mapboxgl.accessToken) return;
 
+    // Read once, at mount. The map is only rendered after the report has
+    // loaded, so the command center's choice is already known here, and
+    // branding does not change while somebody is watching.
     const m = new mapboxgl.Map({
       container: container.current,
-      style: STYLE,
+      style: (mapStyle && MAP_STYLES[mapStyle]) || DEFAULT_STYLE,
       center: [incident.lng, incident.lat],
       zoom: 15,
       attributionControl: false,
-      // A map that can be panned into the sea by a shaking hand is not helping.
-      dragRotate: false,
-      touchPitch: false,
+      /**
+       * Deliberately not interactive.
+       *
+       * This map runs full width, so on a phone every attempt to scroll past it
+       * would instead drag the map — and someone who accidentally pans away from
+       * the scene has lost the one thing they came here for. There is nothing to
+       * explore either: the view already frames the incident and whoever is
+       * coming to it, and refits itself as they move.
+       */
+      interactive: false,
     });
     m.on('load', () => setReady(true));
     map.current = m;
